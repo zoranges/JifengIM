@@ -888,7 +888,7 @@ func (a *App) newManagerMonitorProvider(control managerClusterControlReader) acc
 		nodeID = a.cfg.Cluster.NodeID
 	}
 	return newManagerPrometheusMonitorProvider(managerPrometheusMonitorOptions{
-		Enabled:  a.cfg.Observability.MetricsEnabled && a.cfg.Observability.Prometheus.Enabled,
+		Enabled:  a.cfg.Observability.MetricsEnabled && prometheusBaseURL != "",
 		BaseURL:  prometheusBaseURL,
 		NodeID:   nodeID,
 		NodeName: fmt.Sprintf("node-%d", nodeID),

@@ -9,7 +9,7 @@ services:
       - ./docker/conf/node1.conf:/etc/wukongim/wukongim.conf:ro
       - ./docker/dev-cluster/node1:/var/lib/wukongim
     ports:
-      - "15001:5001"
+      - "5001:5001"
       - "15100:5100"
       - "15200:5200"
       - "17100:7000"
@@ -94,6 +94,8 @@ services:
       - wk-node1
     environment:
       WK_WEB_API_URL: ${WK_WEB_API_URL:-http://wk-node1:5301}
+    volumes:
+      - ./docker/chatdemo:/usr/share/nginx/chatdemo:ro
     ports:
       - "18080:80"
 

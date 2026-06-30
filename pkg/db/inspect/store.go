@@ -14,19 +14,31 @@ const (
 	maxLimit     = 10000
 )
 
+// MetaEngineProvider exposes the underlying Pebble engine without importing internal/engine.
+type MetaEngineProvider interface {
+	Engine() *engine.DB
+}
+
+// MessageEngineProvider exposes the underlying Pebble message engine without importing internal/engine.
+type MessageEngineProvider interface {
+	Engine() *engine.DB
+}
+
 // Store owns read-only database handles for inspection.
 type Store struct {
 	opts Options
 
-	metaEngine    *engine.DB
-	messageEngine *engine.DB
+	metaEngine     *engine.DB
+	metaEngineOwned bool
+	messageEngine     *engine.DB
+	messageEngineOwned bool
 	metaDB        *meta.MetaDB
 	messageDB     *message.MessageDB
 }
 
 // OpenStore opens metadata and message stores in read-only mode.
 func OpenStore(opts Options) (*Store, error) {
-	if opts.MetaPath == "" && opts.MessagePath == "" {
+	if opts.MetaPath == "" && opts.MessagePath == "" && opts.MetaDB == nil && opts.MessageDB == nil {
 		return nil, db.ErrInvalidArgument
 	}
 	if opts.DefaultLimit <= 0 {
@@ -37,21 +49,29 @@ func OpenStore(opts Options) (*Store, error) {
 	}
 
 	store := &Store{opts: opts}
-	if opts.MetaPath != "" {
+	if opts.MetaDB != nil {
+		store.metaEngine = opts.MetaDB.Engine()
+		store.metaDB = meta.NewDB(store.metaEngine)
+	} else if opts.MetaPath != "" {
 		eng, err := engine.Open(opts.MetaPath, engine.Options{ReadOnly: true})
 		if err != nil {
 			return nil, err
 		}
 		store.metaEngine = eng
+		store.metaEngineOwned = true
 		store.metaDB = meta.NewDB(eng)
 	}
-	if opts.MessagePath != "" {
+	if opts.MessageDB != nil {
+		store.messageEngine = opts.MessageDB.Engine()
+		store.messageDB = message.NewDB(store.messageEngine)
+	} else if opts.MessagePath != "" {
 		eng, err := engine.Open(opts.MessagePath, engine.Options{ReadOnly: true})
 		if err != nil {
 			_ = store.Close()
 			return nil, err
 		}
 		store.messageEngine = eng
+		store.messageEngineOwned = true
 		store.messageDB = message.NewDB(eng)
 	}
 	return store, nil
@@ -79,15 +99,15 @@ func (s *Store) Close() error {
 		return nil
 	}
 	var err error
-	if s.metaEngine != nil {
+	if s.metaEngine != nil && s.metaEngineOwned {
 		err = errors.Join(err, s.metaEngine.Close())
-		s.metaEngine = nil
-		s.metaDB = nil
 	}
-	if s.messageEngine != nil {
+	s.metaEngine = nil
+	s.metaDB = nil
+	if s.messageEngine != nil && s.messageEngineOwned {
 		err = errors.Join(err, s.messageEngine.Close())
-		s.messageEngine = nil
-		s.messageDB = nil
 	}
+	s.messageEngine = nil
+	s.messageDB = nil
 	return err
 }

@@ -882,6 +882,17 @@ func build(cfg Config) (_ *App, err error) {
 			Plugins:        pluginNodes,
 			PluginBindings: pluginBindings,
 		})
+		var monitorProvider accessmanager.RealtimeMonitorProvider
+		if promAddr := cfg.Manager.PrometheusListenAddr; promAddr != "" {
+			if !strings.HasPrefix(promAddr, "http://") && !strings.HasPrefix(promAddr, "https://") {
+				promAddr = "http://" + promAddr
+			}
+			monitorProvider = accessmanager.NewPrometheusMonitorProvider(accessmanager.PrometheusMonitorOptions{
+				BaseURL: promAddr,
+				NodeID:  cfg.Node.ID,
+			})
+		}
+		dbInspectProvider := newDBInspectProvider(cfg.Node.ID, app.db, cfg.Cluster.HashSlotCount)
 		app.manager = accessmanager.New(accessmanager.Options{
 			ListenAddr: cfg.Manager.ListenAddr,
 			Auth: accessmanager.AuthConfig{
@@ -891,8 +902,10 @@ func build(cfg Config) (_ *App, err error) {
 				JWTExpire: cfg.Manager.JWTExpire,
 				Users:     managerUserConfigs(cfg.Manager.Users),
 			},
-			Management: app.managementApp,
-			Logger:     app.logger.Named("access.manager"),
+			Management:      app.managementApp,
+			RealtimeMonitor: monitorProvider,
+			DBInspect:       dbInspectProvider,
+			Logger:          app.logger.Named("access.manager"),
 		})
 	}
 	if cfg.API.ListenAddr != "" {
@@ -944,6 +957,7 @@ func build(cfg Config) (_ *App, err error) {
 			LegacyRouteExternal:      legacyRouteExternal,
 			LegacyRouteIntranet:      legacyRouteIntranet,
 			LegacyRouteNodes:         legacyRouteNodes,
+			FileUploadDir:            cfg.API.FileUploadDir,
 			Logger:                   app.logger.Named("access.api"),
 		})
 	}

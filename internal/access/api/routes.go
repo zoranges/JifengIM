@@ -66,6 +66,7 @@ func (s *Server) registerRoutes() {
 	s.engine.POST("/channel/whitelist_remove", s.handleChannelAllowlistRemove)
 	s.engine.POST("/channel/whitelist_remove_all", s.handleChannelAllowlistRemoveAll)
 	s.engine.GET("/channel/whitelist", s.handleChannelAllowlistGet)
+	s.engine.POST("/file/upload", s.handleFileUpload)
 	s.engine.POST("/message/send", s.handleSendMessage)
 	s.engine.POST("/message/sync", s.handleMessageSync)
 	s.engine.POST("/message/syncack", s.handleMessageSyncAck)

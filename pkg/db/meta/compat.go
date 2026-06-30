@@ -316,6 +316,14 @@ func (db *DB) MetaDB() *MetaDB {
 	return db.meta
 }
 
+// Engine returns the underlying Pebble engine handle.
+func (db *DB) Engine() *engine.DB {
+	if db == nil {
+		return nil
+	}
+	return db.engine
+}
+
 // ForSlot returns a shard handle for legacy single-slot callers.
 func (db *DB) ForSlot(slot uint64) *ShardStore {
 	if slot > math.MaxUint16 {

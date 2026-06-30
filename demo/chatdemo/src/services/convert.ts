@@ -81,8 +81,7 @@ export class Convert {
             }
             message.content = messageContent
         }catch(e) {
-            console.log(e)
-            // 如果报错，直接设置为unknown  
+            // 如果报错，直接设置为unknown
             const messageContent = WKSDK.shared().getMessageContent(MessageContentType.unknown)
             message.content = messageContent
         }

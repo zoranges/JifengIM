@@ -19,7 +19,7 @@ export function SidebarNav() {
         <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
           {intl.formatMessage({ id: activeSection.titleMessageId })}
         </div>
-        <div className="mt-2 text-sm font-semibold text-foreground">WuKongIM</div>
+        <div className="mt-2 text-sm font-semibold text-foreground">疾风</div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           {intl.formatMessage({ id: "shell.runtimeConsoleDescription" })}
         </p>

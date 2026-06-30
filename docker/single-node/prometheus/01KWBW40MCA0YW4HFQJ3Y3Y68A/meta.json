@@ -1,0 +1,18 @@
+{
+	"ulid": "01KWBW40MCA0YW4HFQJ3Y3Y68A",
+	"minTime": 1782799203440,
+	"maxTime": 1782806400000,
+	"stats": {
+		"numSamples": 300166,
+		"numFloatSamples": 300166,
+		"numSeries": 638,
+		"numChunks": 2503
+	},
+	"compaction": {
+		"level": 1,
+		"sources": [
+			"01KWBW40MCA0YW4HFQJ3Y3Y68A"
+		]
+	},
+	"version": 1
+}

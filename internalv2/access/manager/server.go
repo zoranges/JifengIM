@@ -309,7 +309,12 @@ func (s *Server) registerRoutes() {
 	}
 	nodes.GET("/nodes", s.handleNodes)
 	nodes.GET("/runtime/workqueues", s.handleRuntimeWorkqueues)
-	nodes.GET("/realtime-monitor", s.handleRealtimeMonitor)
+// Register realtime-monitor directly on engine to avoid Gin group routing issues.
+	if s.auth.enabled() {
+		s.engine.GET("/manager/realtime-monitor", s.requirePermission("cluster.node", "r"), s.handleRealtimeMonitor)
+	} else {
+		s.engine.GET("/manager/realtime-monitor", s.handleRealtimeMonitor)
+	}
 
 	nodeWrites := s.engine.Group("/manager")
 	if s.auth.enabled() {

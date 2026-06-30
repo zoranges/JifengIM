@@ -1,31 +1,25 @@
-
-
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
 import { CMDContent, Channel, ChannelInfo, ChannelTypePerson, ConnectStatus, ConnectStatusListener, Conversation, ConversationAction, Message, WKSDK } from 'wukongimjssdk';
 import { ConversationWrap } from './ConversationWrap';
 import APIClient, { CMDType } from '../../services/APIClient';
+import { avatarUrl } from '../../services/utils';
 
-const conversationWraps = ref<ConversationWrap[]>() // 本地最近会话列表
-
-const selectedChannel = ref<Channel>() // 选中的频道
+const conversationWraps = ref<ConversationWrap[]>()
+const selectedChannel = ref<Channel>()
 
 const onSelectChannel = defineProps<{ onSelectChannel: (channel: Channel) => void }>()
 
-// 监听连接状态
 const connectStatusListener = async (status: ConnectStatus) => {
-    console.log("connectStatusListener", status)
     if (status === ConnectStatus.Connected) {
-        const remoteConversations = await WKSDK.shared().conversationManager.sync() // 同步最近会话列表
+        const remoteConversations = await WKSDK.shared().conversationManager.sync()
         if (remoteConversations && remoteConversations.length > 0) {
             conversationWraps.value = sortConversations(remoteConversations.map(conversation => new ConversationWrap(conversation)))
         }
     }
 }
 
-// 监听cmd消息  
 const cmdListener = (msg: Message) => {
-    console.log("收到CMD：", msg)
     const cmdContent = msg.content as CMDContent
     if (cmdContent.cmd === CMDType.CMDTypeClearUnread) {
         const clearChannel = new Channel(cmdContent.param.channelID, cmdContent.param.channelType)
@@ -33,8 +27,7 @@ const cmdListener = (msg: Message) => {
     }
 }
 
-// 监听最近会话列表的变化
-const conversationListener = (conversation: Conversation, action: ConversationAction) => { // 监听最近会话列表的变化
+const conversationListener = (conversation: Conversation, action: ConversationAction) => {
     if (action === ConversationAction.add) {
         conversationWraps.value = [new ConversationWrap(conversation), ...(conversationWraps.value || [])]
     } else if (action === ConversationAction.update) {
@@ -45,18 +38,14 @@ const conversationListener = (conversation: Conversation, action: ConversationAc
         }
     } else if (action === ConversationAction.remove) {
         const index = conversationWraps.value?.findIndex(item => item.channel.channelID === conversation.channel.channelID && item.channel.channelType === conversation.channel.channelType)
-        if (index && index >= 0) {
+        if (index !== undefined && index >= 0) {
             conversationWraps.value?.splice(index, 1)
         }
     }
 }
 
 const channelInfoListener = (channelInfo: ChannelInfo) => {
-    conversationWraps.value = [...conversationWraps.value || []] // 强制刷新
-    // const index = conversationWraps.value?.findIndex(item => item.channel.channelID === channelInfo.channel.channelID && item.channel.channelType === channelInfo.channel.channelType)
-    // if (index !== undefined && index >= 0) {
-    //     conversationWraps.value![index].channelInfo = channelInfo
-    // }
+    conversationWraps.value = [...conversationWraps.value || []]
 }
 
 const clearConversationUnread = (channel: Channel) => {
@@ -67,13 +56,11 @@ const clearConversationUnread = (channel: Channel) => {
     }
 }
 
-
 onMounted(async () => {
-
-    WKSDK.shared().connectManager.addConnectStatusListener(connectStatusListener) // 监听连接状态
-    WKSDK.shared().conversationManager.addConversationListener(conversationListener) // 监听最近会话列表的变化
-    WKSDK.shared().chatManager.addCMDListener(cmdListener) // 监听cmd消息
-    WKSDK.shared().channelManager.addListener(channelInfoListener) // 监听频道信息变化
+    WKSDK.shared().connectManager.addConnectStatusListener(connectStatusListener)
+    WKSDK.shared().conversationManager.addConversationListener(conversationListener)
+    WKSDK.shared().chatManager.addCMDListener(cmdListener)
+    WKSDK.shared().channelManager.addListener(channelInfoListener)
 })
 
 onUnmounted(() => {
@@ -83,7 +70,6 @@ onUnmounted(() => {
     WKSDK.shared().channelManager.removeListener(channelInfoListener)
 })
 
-// 排序最近会话列表
 const sortConversations = (conversations?: Array<ConversationWrap>) => {
     let newConversations = conversations;
     if (!newConversations) {
@@ -130,11 +116,9 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
     if (!channelInfo) {
         WKSDK.shared().channelManager.fetchChannelInfo(channel)
     }
-
 }
 
 </script>
-
 
 <template>
     <div class="conversations">
@@ -144,30 +128,21 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
             {{ fetchChannelInfoIfNeed(conversationWrap.channel) }}
             <div class="item-content">
                 <div class="left">
-                    <div class="avatar" style="width: 48px;height: 48px;"
-                        v-if="conversationWrap.channel.channelType === ChannelTypePerson">
-                        <img :src="conversationWrap.channelInfo?.logo" style="width: 48px;height: 48px;" />
+                    <div class="avatar" v-if="conversationWrap.channel.channelType === ChannelTypePerson">
+                        <img :src="conversationWrap.channelInfo?.logo || avatarUrl(conversationWrap.channel.channelID)" />
                     </div>
-                    <div class="avatar" style="width: 48px;height: 48px;" v-else>
-                        {{ conversationWrap.channelInfo?.title }}
+                    <div class="avatar group-avatar" v-else>
+                        <span>{{ (conversationWrap.channelInfo?.title || conversationWrap.channel.channelID).charAt(0) }}</span>
                     </div>
                 </div>
                 <div class="right">
-                    <div class="right-item1">
-                        <div class="title">
-                            {{ conversationWrap.channel.channelID }}
-                        </div>
-                        <div class="time">
-                            {{ conversationWrap.timestampString }}
-                        </div>
+                    <div class="right-row-1">
+                        <div class="title">{{ conversationWrap.channelInfo?.title || conversationWrap.channel.channelID }}</div>
+                        <div class="time">{{ conversationWrap.timestampString }}</div>
                     </div>
-                    <div class="right-item2">
-                        <div class="last-msg">
-                            {{ conversationWrap.conversationDigest }}
-                        </div>
-                        <div v-if="conversationWrap.unread > 0" className="reddot">
-                            {{ conversationWrap.unread }}
-                        </div>
+                    <div class="right-row-2">
+                        <div class="last-msg">{{ conversationWrap.conversationDigest }}</div>
+                        <div v-if="conversationWrap.unread > 0" class="badge">{{ conversationWrap.unread > 99 ? '99+' : conversationWrap.unread }}</div>
                     </div>
                 </div>
             </div>
@@ -180,112 +155,118 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
     width: 100%;
     height: 100%;
     overflow-y: auto;
-}
-
-.item-content {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    width: 100%;
-    text-align: left;
+    padding: 8px;
 }
 
 .conversation-item {
     display: flex;
-    height: 80px;
-    width: 100%;
-    background-color: white;
+    padding: 12px;
+    border-radius: var(--radius);
     cursor: pointer;
-    overflow: hidden;
+    transition: all var(--transition);
+    margin-bottom: 2px;
+}
+
+.conversation-item:hover {
+    background: var(--bg-elevated);
+}
+
+.conversation-item.selected {
+    background: linear-gradient(135deg, rgba(79, 110, 247, 0.08), rgba(0, 212, 170, 0.06));
+    border: 1px solid rgba(79, 110, 247, 0.15);
+}
+
+.item-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
 }
 
 .left {
-    height: 100%;
-    display: flex;
-    align-items: center;
-    margin-left: 10px;
-}
-
-.right {
-    margin-left: 10px;
-    height: 100%;
-    width: calc(300px - 100px);
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-}
-
-.right-item1 {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-
-}
-
-
-.right-item2 {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-}
-
-.reddot {
-    width: 20px;
-    height: 20px;
-    border-radius: 10px;
-    background-color: rgb(228, 98, 64);
-    color: white;
-    font-size: 12px;
-    text-align: center;
-    line-height: 20px;
-    margin-right: 10px;
-}
-
-
-
-.right-item1 .title {
-    font-size: 16px;
-    font-weight: bold;
-    max-width: 100px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: block;
-}
-
-.last-msg {
-    font-size: 14px;
-    color: #999999;
-    margin-top: 4px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: block;
-
-}
-
-.time {
-    font-size: 12px;
-    color: #999999;
-    margin-right: 10px;
-}
-
-.selected {
-    background-color: #eee;
+    flex-shrink: 0;
 }
 
 .avatar {
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--bg-elevated);
+}
+
+.avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.group-avatar {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 50%;
-    background-color: rgb(228, 98, 64);
-    color: white;
-    font-size: 20px;
-    text-align: center;
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+}
+
+.group-avatar span {
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.right {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.right-row-1,
+.right-row-2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+.title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+}
+
+.time {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.last-msg {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
+.badge {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
 </style>

@@ -1,10 +1,10 @@
 
 
 <script setup lang="ts">
-
+import type { Message } from 'wukongimjssdk'
 
 const props = defineProps<{
-    message: any
+    message: Message
 }>()
 
 const order = props.message.content

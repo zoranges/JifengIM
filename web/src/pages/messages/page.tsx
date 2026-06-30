@@ -84,8 +84,9 @@ function decodePayload(value: string) {
     const binary = atob(value)
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
     const decoded = new TextDecoder().decode(bytes)
-    const printable = /^[\x09\x0A\x0D\x20-\x7E]*$/.test(decoded)
-    return printable ? decoded : value
+    // Reject only strings that are mostly binary garbage (null bytes, control chars).
+    const likelyBinary = /[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(decoded) && decoded.length < 100
+    return likelyBinary ? value : decoded
   } catch {
     return value
   }

@@ -3,11 +3,11 @@
 </template>
 
 <script setup lang="ts">
+import type { Message } from 'wukongimjssdk'
 
 const props = defineProps<{
-    message: any
+    message: Message
 }>()
-
 </script>
 
 <style scoped>

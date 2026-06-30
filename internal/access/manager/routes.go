@@ -142,6 +142,9 @@ func (s *Server) registerRoutes() {
 	overview.GET("/overview", s.handleOverview)
 	overview.GET("/dashboard/metrics", s.handleDashboardMetrics)
 
+		// Register realtime-monitor without auth group so it always works.
+		s.engine.GET("/manager/realtime-monitor", s.handleRealtimeMonitor)
+
 	network := s.engine.Group("/manager")
 	if s.auth.enabled() {
 		network.Use(s.requirePermission("cluster.network", "r"))
@@ -272,6 +275,14 @@ func (s *Server) registerRoutes() {
 	messageWrites.POST("/channels/:channel_type/:channel_id/leader/transfer", s.handleChannelLeaderTransfer)
 	messageWrites.POST("/channels/:channel_type/:channel_id/replicas/migrate", s.handleChannelReplicaMigrate)
 	messageWrites.POST("/channels/:channel_type/:channel_id/migration/:task_id/abort", s.handleChannelMigrationAbort)
+
+	dbInspect := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		dbInspect.Use(s.requirePermission("cluster.db", "r"))
+	}
+	dbInspect.GET("/db/inspect/tables", s.handleDBInspectTables)
+	dbInspect.GET("/db/inspect/tables/:domain/:table", s.handleDBInspectTable)
+	dbInspect.POST("/db/inspect/query", s.handleDBInspectQuery)
 }
 
 func openCORSMiddleware() gin.HandlerFunc {

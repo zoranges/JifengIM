@@ -27,10 +27,14 @@ const (
 
 // Options configures a read-only inspect store.
 type Options struct {
-	// MetaPath is the Pebble path for metadata storage.
+	// MetaPath is the Pebble path for metadata storage (ignored when MetaDB is set).
 	MetaPath string
-	// MessagePath is the Pebble path for message storage.
+	// MessagePath is the Pebble path for message storage (ignored when MessageDB is set).
 	MessagePath string
+	// MetaDB is an existing metadb handle; used instead of MetaPath when set.
+	MetaDB MetaEngineProvider
+	// MessageDB is an existing message DB handle; used instead of MessagePath when set.
+	MessageDB MessageEngineProvider
 	// HashSlotCount bounds metadata scans across hash slots.
 	HashSlotCount uint16
 	// DefaultLimit is used when a query omits LIMIT.

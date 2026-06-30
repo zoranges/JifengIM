@@ -34,7 +34,7 @@ export function Topbar() {
               className="size-8 rounded-xl border border-primary/35 bg-[linear-gradient(135deg,var(--primary),#1f7a4a)] shadow-[0_0_32px_rgba(101,216,138,0.24)]"
             />
             <div className="hidden sm:block">
-              <div className="font-mono text-[13px] font-semibold tracking-[0.24em] text-foreground">WUKONGIM</div>
+              <div className="font-mono text-[13px] font-semibold tracking-[0.24em] text-foreground">疾风</div>
               <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
                 {intl.formatMessage({ id: "shell.operationsCockpit" })}
               </div>

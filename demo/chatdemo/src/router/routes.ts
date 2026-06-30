@@ -1,5 +1,5 @@
 import { RouteRecordRaw } from 'vue-router';
-const chat = () => import('../view/Chat.vue')
+import Chat from '../view/Chat.vue'
 const login = () => import('../view/Login.vue')
 const routes:Array<RouteRecordRaw> = [
     {
@@ -8,7 +8,7 @@ const routes:Array<RouteRecordRaw> = [
     },
     {
         path: '/chat',
-        component: chat,
+        component: Chat,
     },
 ]
 export default routes;

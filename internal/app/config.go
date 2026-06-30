@@ -470,6 +470,8 @@ type SlotLogCompactionConfig struct {
 type ClusterConfig struct {
 	// ListenAddr is the node-to-node cluster RPC listen address.
 	ListenAddr string
+		// PrometheusListenAddr is the Prometheus HTTP API address for monitoring queries.
+		PrometheusListenAddr string
 	// SlotCount is the legacy configured physical slot count and mirrors InitialSlotCount when set.
 	SlotCount uint32
 	// HashSlotCount is the number of hash slots used to map keys to managed physical slots.
@@ -706,12 +708,16 @@ func (c *GatewayConfig) SetExplicitFlags(sendTimeoutSet bool) {
 type APIConfig struct {
 	// ListenAddr is the HTTP API listen address. An empty value disables the API service.
 	ListenAddr string
+		// PrometheusListenAddr is the Prometheus HTTP API address for monitoring queries.
+		PrometheusListenAddr string
 	// ExternalTCPAddr is the published TCP gateway address returned by route APIs.
 	ExternalTCPAddr string
 	// ExternalWSAddr is the published WebSocket gateway address returned by route APIs.
 	ExternalWSAddr string
 	// ExternalWSSAddr is the published secure WebSocket gateway address returned by route APIs.
 	ExternalWSSAddr string
+	// FileUploadDir is the local directory for uploaded chat files. Empty disables upload.
+	FileUploadDir string
 }
 
 // ManagerConfig configures the manager HTTP service.
@@ -719,6 +725,8 @@ type ManagerConfig struct {
 	// ListenAddr is the manager server listen address. An empty value disables
 	// the manager service entirely.
 	ListenAddr string
+		// PrometheusListenAddr is the Prometheus HTTP API address for monitoring queries.
+		PrometheusListenAddr string
 	// AuthOn enables JWT login and permission checks for manager routes.
 	AuthOn bool
 	// JWTSecret is the signing secret used for manager JWT tokens.

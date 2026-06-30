@@ -36,6 +36,18 @@ export function createViteConfig(
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return
+            if (id.includes('@radix-ui') || id.includes('lucide-react')) return 'vendor-ui'
+            if (id.includes('recharts')) return 'vendor-chart'
+            if (id.includes('react-dom') || id.includes('react-router') || id.includes('react-intl') || id.includes('react')) return 'vendor-react'
+          },
+        },
+      },
+    },
   }
 }
 

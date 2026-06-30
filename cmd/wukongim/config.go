@@ -846,12 +846,14 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		},
 		API: app.APIConfig{
 			ListenAddr:      defaultAPIListenAddr,
+			FileUploadDir:   stringValue(v, "WK_API_FILEUPLOADDIR"),
 			ExternalTCPAddr: stringValue(v, "WK_EXTERNAL_TCPADDR"),
 			ExternalWSAddr:  stringValue(v, "WK_EXTERNAL_WSADDR"),
 			ExternalWSSAddr: stringValue(v, "WK_EXTERNAL_WSSADDR"),
 		},
 		Manager: app.ManagerConfig{
 			ListenAddr: stringValue(v, "WK_MANAGER_LISTEN_ADDR"),
+				PrometheusListenAddr: stringValue(v, "WK_PROMETHEUS_LISTENADDR"),
 			AuthOn:     managerAuthOn,
 			JWTSecret:  stringValue(v, "WK_MANAGER_JWT_SECRET"),
 			JWTIssuer:  stringValue(v, "WK_MANAGER_JWT_ISSUER"),

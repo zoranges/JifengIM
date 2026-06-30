@@ -138,7 +138,9 @@ type Options struct {
 	LegacyRouteIntranet      LegacyRouteAddresses
 	// LegacyRouteNodes maps node_id query parameters to node-specific legacy route addresses.
 	LegacyRouteNodes map[uint64]LegacyRouteNodeAddresses
-	Logger           wklog.Logger
+	// FileUploadDir is the directory where uploaded files are stored.
+	FileUploadDir string
+	Logger        wklog.Logger
 }
 
 type Server struct {
@@ -173,6 +175,7 @@ type Server struct {
 	legacyRouteExternal      LegacyRouteAddresses
 	legacyRouteIntranet      LegacyRouteAddresses
 	legacyRouteNodes         map[uint64]LegacyRouteNodeAddresses
+	fileUploadDir            string
 	logger                   wklog.Logger
 	started                  bool
 }
@@ -215,6 +218,7 @@ func New(opts Options) *Server {
 		legacyRouteExternal:      opts.LegacyRouteExternal,
 		legacyRouteIntranet:      opts.LegacyRouteIntranet,
 		legacyRouteNodes:         cloneLegacyRouteNodes(opts.LegacyRouteNodes),
+		fileUploadDir:            opts.FileUploadDir,
 		logger:                   opts.Logger,
 	}
 	srv.registerRoutes()

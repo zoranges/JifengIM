@@ -1,25 +1,31 @@
-<template>
-    <div class="text">
-        {{ props.message.content.text }}
-    </div>
-</template>
-
 <script setup lang="ts">
+import { computed } from 'vue'
+import type { Message } from 'wukongimjssdk'
+import { highlightText } from '../services/utils'
 
 const props = defineProps<{
-    message: any
+    message: Message
+    searchQuery?: string
 }>()
 
+const html = computed(() => {
+    const text = props.message.content?.text || ''
+    if (props.searchQuery) {
+        return highlightText(text, props.searchQuery)
+    }
+    return text
+})
 </script>
 
-<style scoped>
+<template>
+    <div class="text" v-html="html"></div>
+</template>
 
- .text {
-    display: flex;
+<style scoped>
+.text {
     text-align: left;
     font-size: 14px;
     max-width: 250px;
     word-break: break-all;
 }
-
 </style>

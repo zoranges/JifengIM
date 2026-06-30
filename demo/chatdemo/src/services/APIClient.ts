@@ -60,6 +60,8 @@ export default class APIClient {
                     if(self.logoutCallback) {
                         self.logoutCallback()
                     }
+                    msg = "未登录（401）"
+                    break
                 default:
                     msg = "未知错误"
                     break;
@@ -124,10 +126,7 @@ export default class APIClient {
             channel_id: channelID,
             channel_type: channelType,
             subscribers: [uid]
-        }).then((res) => {
-            console.log(res)
         }).catch((err) => {
-            console.log(err)
             alert(err.msg)
         })
     }
@@ -186,7 +185,6 @@ export default class APIClient {
             // 这里uid指定的是自己，意味着如果是多端登录，其他端也会收到这条消息
             this.sendCMD(new Channel(WKSDK.shared().config.uid!,ChannelTypePerson),CMDType.CMDTypeClearUnread,channel)
         }).catch((err) => {
-            console.log(err)
             alert(err.msg)
         })
     }
@@ -209,7 +207,7 @@ export default class APIClient {
               "red_dot": 1, // 是否显示红点计数，0.不显示 1.显示
               "sync_once":1 // 是否是写扩散，这里一般是0，只有cmd消息才是1
             },
-            "from_uid": "", // 发送者uid
+            "from_uid": WKSDK.shared().config.uid || "", // 发送者uid
             "channel_id": channel.channelID, // 接收频道ID 如果channel_type=1 channel_id为个人uid 如果channel_type=2 channel_id为群id
             "channel_type": channel.channelType, // 接收频道类型  1.个人频道 2.群聊频道
             "payload": base64, // 消息内容，base64编码

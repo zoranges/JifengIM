@@ -215,22 +215,28 @@ type Options struct {
 	Auth AuthConfig
 	// Management provides the manager read usecases.
 	Management Management
+	// RealtimeMonitor provides Prometheus-backed monitoring data.
+	RealtimeMonitor RealtimeMonitorProvider
+	// DBInspect provides read-only database inspection.
+	DBInspect DBInspectProvider
 	// Logger is the logger used by the manager server.
 	Logger wklog.Logger
 }
 
 // Server serves the manager HTTP API.
 type Server struct {
-	mu         sync.RWMutex
-	engine     *gin.Engine
-	httpServer *http.Server
-	listener   net.Listener
-	listenAddr string
-	addr       string
-	management Management
-	auth       authState
-	logger     wklog.Logger
-	started    bool
+	mu              sync.RWMutex
+	engine          *gin.Engine
+	httpServer      *http.Server
+	listener        net.Listener
+	listenAddr      string
+	addr            string
+	management      Management
+	realtimeMonitor RealtimeMonitorProvider
+	dbInspect       DBInspectProvider
+	auth            authState
+	logger          wklog.Logger
+	started         bool
 }
 
 // New constructs a manager HTTP server.
@@ -244,11 +250,13 @@ func New(opts Options) *Server {
 	engine := gin.New()
 	engine.Use(openCORSMiddleware())
 	srv := &Server{
-		engine:     engine,
-		listenAddr: opts.ListenAddr,
-		management: opts.Management,
-		auth:       newAuthState(opts.Auth),
-		logger:     opts.Logger,
+		engine:          engine,
+		listenAddr:      opts.ListenAddr,
+		management:      opts.Management,
+		realtimeMonitor: opts.RealtimeMonitor,
+		dbInspect:       opts.DBInspect,
+		auth:            newAuthState(opts.Auth),
+		logger:          opts.Logger,
 	}
 	srv.registerRoutes()
 	return srv
