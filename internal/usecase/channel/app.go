@@ -209,6 +209,19 @@ func (a *App) ListSubscribersPage(ctx context.Context, req MemberListPageRequest
 	return a.listMemberListPage(ctx, req.ChannelID, int64(req.ChannelType), req.AfterUID, req.Limit)
 }
 
+// ListSubscribers returns all ordinary subscribers in the legacy member response shape.
+func (a *App) ListSubscribers(ctx context.Context, key ChannelKey) (MemberListResult, error) {
+	uids, err := a.listSubscribers(ctx, key.ChannelID, int64(key.ChannelType))
+	if err != nil {
+		return MemberListResult{}, err
+	}
+	members := make([]Member, 0, len(uids))
+	for _, uid := range uids {
+		members = append(members, Member{UID: uid})
+	}
+	return MemberListResult{Members: members}, nil
+}
+
 // ListAllowlistPage returns one allowlist page.
 func (a *App) ListAllowlistPage(ctx context.Context, req MemberListPageRequest) (MemberListPageResult, error) {
 	return a.listMemberListPage(ctx, namespacedListChannelID(allowListKind, req.ChannelKey), int64(req.ChannelType), req.AfterUID, req.Limit)

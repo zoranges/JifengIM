@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/channelplane"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
@@ -21,7 +22,7 @@ func mapSendErrorReason(err error) (frame.ReasonCode, bool) {
 		return frame.ReasonIdempotencyConflict, true
 	case errors.Is(err, channel.ErrMessageSeqExhausted):
 		return frame.ReasonMessageSeqExhausted, true
-	case errors.Is(err, channel.ErrStaleMeta), errors.Is(err, channel.ErrNotLeader):
+	case errors.Is(err, channel.ErrStaleMeta), errors.Is(err, channel.ErrNotLeader), errors.Is(err, channelplane.ErrStaleRoute):
 		return frame.ReasonNodeNotMatch, true
 	case errors.Is(err, runtimechannelid.ErrInvalidPersonChannel), errors.Is(err, runtimechannelid.ErrInvalidAgentChannel):
 		return frame.ReasonChannelIDError, true

@@ -61,6 +61,7 @@ type ChannelUsecase interface {
 	RemoveAllowlist(ctx context.Context, cmd channelusecase.MemberCommand) error
 	RemoveAllAllowlist(ctx context.Context, key channelusecase.ChannelKey) error
 	ListAllowlist(ctx context.Context, key channelusecase.ChannelKey) (channelusecase.MemberListResult, error)
+	ListSubscribers(ctx context.Context, key channelusecase.ChannelKey) (channelusecase.MemberListResult, error)
 }
 
 // BenchDataUsecase prepares unauthenticated benchmark data when bench mode is enabled.

@@ -71,3 +71,7 @@ docs/development/perf-runs/
 tmp/
 node_modules/
 data/
+docker/single-node/prometheus/
+docker/uploads/
+.vite/
+demo/chatdemo/package-lock.json

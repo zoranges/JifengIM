@@ -40,6 +40,15 @@ func Open(path string, opts Options) (*DB, error) {
 	return &DB{pdb: pdb}, nil
 }
 
+// Flush forces all memtable data to sstables, so that a subsequent Close
+// can complete without relying on WAL replay.
+func (e *DB) Flush() error {
+	if e == nil || e.pdb == nil {
+		return nil
+	}
+	return e.pdb.Flush()
+}
+
 // Close closes the underlying engine.
 func (e *DB) Close() error {
 	if e == nil || e.pdb == nil {
@@ -107,6 +116,8 @@ func pebbleOptions(opts Options) *pebble.Options {
 		L0CompactionThreshold:       8,
 		L0StopWritesThreshold:       24,
 		ReadOnly:                    opts.ReadOnly,
+		WALBytesPerSync:             512 << 10,
+		BytesPerSync:                1 << 20,
 	}
 	popts.Levels[0].FilterPolicy = bloom.FilterPolicy(10)
 	return popts

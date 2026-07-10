@@ -47,16 +47,22 @@ const fileSize = computed(() => fileInfo.value?.size || 0)
 const fileUrl = computed(() => fileInfo.value?.url || '')
 const fileMime = computed(() => fileInfo.value?.mime || '')
 
+const VIDEO_EXTS = new Set(['mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm', 'm4v', '3gp', 'mpg', 'mpeg', 'ogv', 'ts'])
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'aiff', 'aif', 'ape'])
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif', 'heic', 'heif'])
+
 const fileType = computed(() => {
-    if (!fileMime.value) return 'file'
-    if (fileMime.value.startsWith('image/')) return 'image'
-    if (fileMime.value.startsWith('video/')) return 'video'
-    if (fileMime.value.startsWith('audio/')) return 'audio'
-    if (fileMime.value === 'application/pdf') return 'pdf'
-    if (fileMime.value.includes('word') || fileMime.value.includes('document')) return 'doc'
-    if (fileMime.value.includes('spreadsheet') || fileMime.value.includes('excel')) return 'xls'
-    if (fileMime.value.includes('zip') || fileMime.value.includes('rar') || fileMime.value.includes('tar')) return 'archive'
-    if (fileMime.value.startsWith('text/')) return 'text'
+    const mime = fileMime.value?.toLowerCase() || ''
+    const ext = fileName.value.split('.').pop()?.toLowerCase() || ''
+
+    if (mime.startsWith('image/') || IMAGE_EXTS.has(ext)) return 'image'
+    if (mime.startsWith('video/') || VIDEO_EXTS.has(ext)) return 'video'
+    if (mime.startsWith('audio/') || AUDIO_EXTS.has(ext)) return 'audio'
+    if (mime === 'application/pdf') return 'pdf'
+    if (mime.includes('word') || mime.includes('document')) return 'doc'
+    if (mime.includes('spreadsheet') || mime.includes('excel')) return 'xls'
+    if (mime.includes('zip') || mime.includes('rar') || mime.includes('tar')) return 'archive'
+    if (mime.startsWith('text/')) return 'text'
     return 'file'
 })
 
@@ -141,8 +147,8 @@ const download = () => {
     align-items: center;
     gap: 12px;
     padding: 10px 12px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.1);
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 12px;
     min-width: 240px;
     max-width: 320px;
@@ -165,6 +171,7 @@ const download = () => {
     text-overflow: ellipsis;
     white-space: nowrap;
     margin-bottom: 4px;
+    color: var(--text);
 }
 
 .file-meta {
@@ -177,48 +184,50 @@ const download = () => {
     font-size: 10px;
     padding: 2px 6px;
     border-radius: 4px;
-    background: rgba(79,110,247,0.2);
-    color: #93a8fd;
-    font-weight: 500;
+    background: rgba(79,110,247,0.15);
+    color: var(--primary, #4f6ef7);
+    font-weight: 600;
 }
 
 .file-size {
     font-size: 11px;
-    opacity: 0.6;
+    color: var(--text-muted);
 }
 
 .file-actions {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     flex-shrink: 0;
 }
 
 .file-btn {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    border: 1px solid rgba(255,255,255,0.15);
-    background: rgba(255,255,255,0.05);
-    color: rgba(255,255,255,0.7);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: none;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s;
-}
-
-.file-btn:hover {
-    background: rgba(255,255,255,0.12);
+    transition: all 0.2s;
     color: #fff;
 }
 
+.preview-btn {
+    background: var(--primary, #4f6ef7);
+}
+
 .preview-btn:hover {
-    border-color: var(--primary, #4f6ef7);
-    background: rgba(79,110,247,0.15);
+    transform: scale(1.1);
+    box-shadow: 0 2px 10px rgba(79,110,247,0.4);
+}
+
+.download-btn {
+    background: var(--accent, #00d4aa);
 }
 
 .download-btn:hover {
-    border-color: var(--accent, #00d4aa);
-    background: rgba(0,212,170,0.15);
+    transform: scale(1.1);
+    box-shadow: 0 2px 10px rgba(0,212,170,0.4);
 }
 </style>

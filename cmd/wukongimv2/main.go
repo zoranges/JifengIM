@@ -11,7 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internalv2/app"
 )
 
-const defaultStopTimeout = 5 * time.Second
+const defaultStopTimeout = 30 * time.Second
 
 // runtimeApp is the lifecycle surface required by the standalone entrypoint.
 type runtimeApp interface {

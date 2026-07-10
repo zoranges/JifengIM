@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	apiStopTimeout                  = 5 * time.Second
+	apiStopTimeout                  = 30 * time.Second
 	activeHintStopTimeout           = time.Second
 	defaultDataPlaneDialTimeout     = 5 * time.Second
 	defaultManagedSlotsReadyTimeout = 30 * time.Second
@@ -55,6 +55,7 @@ func (a *App) Stop() error {
 		err = errors.Join(
 			a.stopLifecycleManager(stopCtx),
 			a.stopDashboardCollectorWithError(),
+			a.flushAllDBs(),
 			a.closeChannelLogDB(),
 			a.closeRaftDB(),
 			a.closeWKDB(),
@@ -530,6 +531,20 @@ func (a *App) waitForManagedSlotsReady() error {
 	readyCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return a.cluster.WaitForManagedSlotsReady(readyCtx)
+}
+
+func (a *App) flushAllDBs() error {
+	var err error
+	if a.channelLogDB != nil {
+		err = errors.Join(err, a.channelLogDB.Flush())
+	}
+	if a.raftDB != nil {
+		err = errors.Join(err, a.raftDB.Flush())
+	}
+	if a.db != nil {
+		err = errors.Join(err, a.db.Flush())
+	}
+	return err
 }
 
 func (a *App) closeRaftDB() error {

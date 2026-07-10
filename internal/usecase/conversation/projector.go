@@ -34,7 +34,7 @@ type ProjectorOptions struct {
 	ActiveHintQueueSize int
 	// GroupActiveFanoutInterval throttles subscriber fanout per group channel.
 	GroupActiveFanoutInterval time.Duration
-	// GroupActiveFanoutMaxSubscribers caps subscribers touched per group fanout; zero disables group fanout.
+	// GroupActiveFanoutMaxSubscribers caps subscribers touched per group fanout.
 	GroupActiveFanoutMaxSubscribers int
 	// SubscriberPageSize controls subscriber scan page size in the async worker.
 	SubscriberPageSize int

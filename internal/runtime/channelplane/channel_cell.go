@@ -5,9 +5,10 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
-const maxRouteInvalidationRetries = 1
+const maxRouteInvalidationRetries = 2
 
 type channelCell struct {
 	reactor  *reactor
@@ -83,12 +84,28 @@ func (c *channelCell) handleResolveComplete(done effectCompletion) {
 	}
 	c.touch()
 	if done.err != nil {
+		if logger := c.reactor.plane.opts.Logger; logger != nil {
+			logger.Warn("channelplane: route resolve failed",
+				wklog.String("channel_id", done.cmd.req.ChannelID.ID),
+				wklog.Error(done.err),
+			)
+		}
 		c.complete(done.cmd, channel.AppendBatchResult{}, done.err, done.route)
 		c.inflight = nil
 		c.scheduleIfPending()
 		return
 	}
 	c.route = &done.route
+	if logger := c.reactor.plane.opts.Logger; logger != nil {
+		logger.Info("channelplane: route resolved",
+			wklog.String("channel_id", done.cmd.req.ChannelID.ID),
+			wklog.Uint64("route_generation", done.route.RouteGeneration),
+			wklog.Uint64("channel_epoch", done.route.ChannelEpoch),
+			wklog.Uint64("leader_epoch", done.route.LeaderEpoch),
+			wklog.Int("leader_node", int(done.route.Leader)),
+			wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+		)
+	}
 	c.startAppend(done.cmd, done.route)
 }
 
@@ -116,6 +133,16 @@ func (c *channelCell) startRemoteAppend(cmd *appendCommand, route ChannelRoute) 
 		c.handleAppendComplete(effectCompletion{key: c.key, cmd: cmd, route: route, err: ErrNoRemoteAppender})
 		return
 	}
+	if logger := c.reactor.plane.opts.Logger; logger != nil {
+		logger.Debug("channelplane: forwarding to remote leader",
+			wklog.String("channel_id", cmd.req.ChannelID.ID),
+			wklog.Int("target_node", int(route.Leader)),
+			wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+			wklog.Uint64("route_generation", route.RouteGeneration),
+			wklog.Uint64("channel_epoch", route.ChannelEpoch),
+			wklog.Uint64("leader_epoch", route.LeaderEpoch),
+		)
+	}
 	req := route.applyTo(cmd.req)
 	err := c.reactor.plane.peer.AppendRemoteBatchAsync(effectContext(cmd), route.Leader, req, route, func(res channel.AppendBatchResult, err error) {
 		c.reactor.post(reactorEvent{kind: reactorEventAppendComplete, completion: effectCompletion{key: c.key, cmd: cmd, route: route, res: res, err: err}})
@@ -130,11 +157,51 @@ func (c *channelCell) handleAppendComplete(done effectCompletion) {
 		return
 	}
 	c.touch()
+
+	// If remote node says "not leader" and tells us the correct leader, update route directly.
+	var notLeaderErr *NotLeaderError
+	if errors.As(done.err, &notLeaderErr) && notLeaderErr.Leader != 0 && c.route != nil {
+		if logger := c.reactor.plane.opts.Logger; logger != nil {
+			logger.Info("channelplane: updating route from not_leader hint",
+				wklog.String("channel_id", done.cmd.req.ChannelID.ID),
+				wklog.Int("old_leader", int(done.route.Leader)),
+				wklog.Int("new_leader", int(notLeaderErr.Leader)),
+			)
+		}
+		c.reactor.plane.opts.Resolver.InvalidateRoute(done.cmd.req.ChannelID, done.route.RouteGeneration)
+		// Update cached route with the correct leader from the response
+		updatedRoute := *c.route
+		updatedRoute.Leader = notLeaderErr.Leader
+		c.route = &updatedRoute
+		c.startAppend(done.cmd, updatedRoute)
+		return
+	}
+
 	if isRouteInvalidationError(done.err) && c.route != nil {
+		if logger := c.reactor.plane.opts.Logger; logger != nil {
+			logger.Info("channelplane: route invalidated, will retry",
+				wklog.String("channel_id", done.cmd.req.ChannelID.ID),
+				wklog.Error(done.err),
+				wklog.Uint64("old_route_generation", done.route.RouteGeneration),
+				wklog.Uint64("old_channel_epoch", done.route.ChannelEpoch),
+				wklog.Uint64("old_leader_epoch", done.route.LeaderEpoch),
+				wklog.Int("old_leader_node", int(done.route.Leader)),
+				wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+			)
+		}
 		c.reactor.plane.opts.Resolver.InvalidateRoute(done.cmd.req.ChannelID, done.route.RouteGeneration)
 		c.route = nil
 		if c.retryAfterRouteInvalidation(done.cmd) {
 			return
+		}
+	}
+	if done.err != nil && !isRouteInvalidationError(done.err) {
+		if logger := c.reactor.plane.opts.Logger; logger != nil {
+			logger.Warn("channelplane: append failed",
+				wklog.String("channel_id", done.cmd.req.ChannelID.ID),
+				wklog.Error(done.err),
+				wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+			)
 		}
 	}
 	c.complete(done.cmd, done.res, done.err, done.route)
@@ -145,6 +212,13 @@ func (c *channelCell) handleAppendComplete(done effectCompletion) {
 // retryAfterRouteInvalidation gives a command one fresh route lookup after a fenced append attempt.
 func (c *channelCell) retryAfterRouteInvalidation(cmd *appendCommand) bool {
 	if cmd.routeInvalidationRetries >= maxRouteInvalidationRetries {
+		if logger := c.reactor.plane.opts.Logger; logger != nil {
+			logger.Warn("channelplane: max route invalidation retries reached",
+				wklog.String("channel_id", cmd.req.ChannelID.ID),
+				wklog.Int("retries", cmd.routeInvalidationRetries),
+				wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+			)
+		}
 		return false
 	}
 	if err := effectContext(cmd).Err(); err != nil {
@@ -152,6 +226,13 @@ func (c *channelCell) retryAfterRouteInvalidation(cmd *appendCommand) bool {
 	}
 	c.touch()
 	cmd.routeInvalidationRetries++
+	if logger := c.reactor.plane.opts.Logger; logger != nil {
+		logger.Info("channelplane: retrying after route invalidation",
+			wklog.String("channel_id", cmd.req.ChannelID.ID),
+			wklog.Int("retry_attempt", cmd.routeInvalidationRetries),
+			wklog.Int("local_node", int(c.reactor.plane.opts.LocalNode)),
+		)
+	}
 	c.startResolve(cmd)
 	return true
 }

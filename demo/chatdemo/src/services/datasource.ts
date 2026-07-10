@@ -33,12 +33,44 @@ export function initDataSource() {
         return channelInfo
     }
 
-    
-    // 如果是群频道，可以实现这个方法，调用 WKSDK.shared().channelManager.syncSubscribes(channel) 方法将会触发此回调
-    //  WKSDK.shared().config.provider.syncSubscribersCallback
+    // 同步频道订阅者（成员列表）
+    WKSDK.shared().config.provider.syncSubscribersCallback = async (channel: Channel, version: number) => {
+        const resp = await APIClient.shared.get('/channel/subscribers', {
+            param: { channel_id: channel.channelID, channel_type: channel.channelType }
+        })
+        const items = (resp as any[]) || []
+        return items.map((item: any) => ({
+            uid: item.uid || item,
+            channel: channel,
+            version: version + 1,
+            isDeleted: false,
+            role: item.role || 0,
+            status: item.status || 0,
+        }))
+    }
 
-    // 如果涉及到消息包含附件（多媒体）可以实现这个方法，sdk将调用此方法进行附件上传
-    //  WKSDK.shared().config.provider.messageUploadTask
+    // 同步消息扩展信息（已读回执等）
+    WKSDK.shared().config.provider.syncMessageExtraCallback = async (channel: Channel, extraVersion: number, limit: number) => {
+        const resp = await APIClient.shared.post('/channel/messageextra/sync', {
+            login_uid: WKSDK.shared().config.uid,
+            channel_id: channel.channelID,
+            channel_type: channel.channelType,
+            extra_version: extraVersion,
+            limit: limit,
+        })
+        return (resp && resp.message_extras) ? resp.message_extras : []
+    }
+
+    // 消息已读回执
+    WKSDK.shared().config.provider.messageReadedCallback = async (channel: Channel, messages: any[]) => {
+        if (!messages || messages.length === 0) return
+        await APIClient.shared.post('/channel/messageReaded', {
+            login_uid: WKSDK.shared().config.uid,
+            channel_id: channel.channelID,
+            channel_type: channel.channelType,
+            client_msg_nos: messages.map((m: any) => m.clientMsgNo),
+        })
+    }
 
 
 }

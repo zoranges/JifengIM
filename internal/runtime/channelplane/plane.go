@@ -44,6 +44,7 @@ func New(opts Options) (*Plane, error) {
 			MaxBatchRecords: opts.PeerBatchMaxRecords,
 			MaxBatchBytes:   opts.PeerBatchMaxBytes,
 			MaxPending:      opts.PeerMaxPending,
+			Logger:          opts.Logger,
 		})
 	}
 	return p, nil

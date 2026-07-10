@@ -75,7 +75,10 @@ func Open(path string, opts Options) (*DB, error) {
 		return nil, err
 	}
 
-	pdb, err := pebble.Open(path, &pebble.Options{})
+	pdb, err := pebble.Open(path, &pebble.Options{
+		WALBytesPerSync: 512 << 10,
+		BytesPerSync:    1 << 20,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +137,14 @@ func (db *DB) ensureManifest() error {
 		return err
 	}
 	return db.db.Set(encodeManifestKey(), []byte{currentFormatVersion}, pebble.Sync)
+}
+
+// Flush forces all memtable data to sstables, ensuring WAL is no longer needed.
+func (db *DB) Flush() error {
+	if db == nil || db.db == nil {
+		return nil
+	}
+	return db.db.Flush()
 }
 
 func (db *DB) Close() error {

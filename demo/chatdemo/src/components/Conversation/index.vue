@@ -4,18 +4,30 @@ import { CMDContent, Channel, ChannelInfo, ChannelTypePerson, ConnectStatus, Con
 import { ConversationWrap } from './ConversationWrap';
 import APIClient, { CMDType } from '../../services/APIClient';
 import { avatarUrl } from '../../services/utils';
+import { addRevokedMessage } from '../../services/revokeStore';
 
 const conversationWraps = ref<ConversationWrap[]>()
 const selectedChannel = ref<Channel>()
 
 const onSelectChannel = defineProps<{ onSelectChannel: (channel: Channel) => void }>()
 
+const syncConversations = async () => {
+    try {
+        const remoteConversations = await WKSDK.shared().conversationManager.sync()
+        console.log('[Conversation] sync result:', remoteConversations?.length || 0, 'conversations')
+        if (remoteConversations && remoteConversations.length > 0) {
+            conversationWraps.value = sortConversations(remoteConversations.map(c => new ConversationWrap(c)))
+        } else {
+            conversationWraps.value = []
+        }
+    } catch (e) {
+        console.error('[Conversation] sync failed:', e)
+    }
+}
+
 const connectStatusListener = async (status: ConnectStatus) => {
     if (status === ConnectStatus.Connected) {
-        const remoteConversations = await WKSDK.shared().conversationManager.sync()
-        if (remoteConversations && remoteConversations.length > 0) {
-            conversationWraps.value = sortConversations(remoteConversations.map(conversation => new ConversationWrap(conversation)))
-        }
+        syncConversations()
     }
 }
 
@@ -24,6 +36,26 @@ const cmdListener = (msg: Message) => {
     if (cmdContent.cmd === CMDType.CMDTypeClearUnread) {
         const clearChannel = new Channel(cmdContent.param.channelID, cmdContent.param.channelType)
         clearConversationUnread(clearChannel)
+    } else if (cmdContent.cmd === CMDType.CMDTypeMessageRevoke) {
+        // Server broadcasts revoke CMD with empty param — sync extras to get actual revoke info
+        const cmdChannel = msg.channel
+        WKSDK.shared().chatManager.syncMessageExtras(cmdChannel, 0).then((extras: any[]) => {
+            if (extras && extras.length > 0) {
+                for (const extra of extras) {
+                    if (extra.revoke === 1 || extra.revoke === true) {
+                        const msgID = extra.message_id_str || (extra.message_id ? String(extra.message_id) : '')
+                        addRevokedMessage(
+                            cmdChannel.channelID,
+                            cmdChannel.channelType,
+                            '',
+                            msgID,
+                            extra.message_seq || 0,
+                            extra.revoker || msg.fromUID,
+                        )
+                    }
+                }
+            }
+        }).catch(() => { /* ignore */ })
     }
 }
 
@@ -61,6 +93,11 @@ onMounted(async () => {
     WKSDK.shared().conversationManager.addConversationListener(conversationListener)
     WKSDK.shared().chatManager.addCMDListener(cmdListener)
     WKSDK.shared().channelManager.addListener(channelInfoListener)
+
+    // Sync immediately if already connected (e.g., page refresh)
+    if (WKSDK.shared().connectManager.status === ConnectStatus.Connected) {
+        syncConversations()
+    }
 })
 
 onUnmounted(() => {
@@ -118,6 +155,15 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
     }
 }
 
+const deleteConversation = async (e: Event, conversationWrap: ConversationWrap) => {
+    e.stopPropagation()
+    if (!confirm('确定删除此会话？')) return
+    try {
+        await APIClient.shared.deleteConversation(conversationWrap.channel)
+        WKSDK.shared().conversationManager.removeConversation(conversationWrap.channel)
+    } catch { /* ignore */ }
+}
+
 </script>
 
 <template>
@@ -145,6 +191,11 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
                         <div v-if="conversationWrap.unread > 0" class="badge">{{ conversationWrap.unread > 99 ? '99+' : conversationWrap.unread }}</div>
                     </div>
                 </div>
+                <button class="conv-delete-btn" @click="(e: Event) => deleteConversation(e, conversationWrap)" title="删除会话">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
         </div>
     </div>
@@ -165,6 +216,7 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
     cursor: pointer;
     transition: all var(--transition);
     margin-bottom: 2px;
+    position: relative;
 }
 
 .conversation-item:hover {
@@ -268,5 +320,34 @@ const fetchChannelInfoIfNeed = (channel: Channel) => {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+}
+
+.conv-delete-btn {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s;
+}
+
+.conversation-item:hover .conv-delete-btn {
+    opacity: 0.5;
+}
+
+.conv-delete-btn:hover {
+    opacity: 1 !important;
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
 }
 </style>

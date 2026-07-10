@@ -217,6 +217,14 @@ func (e *Engine) CommitCoordinatorConfig() CommitCoordinatorConfig {
 	return effectiveCommitCoordinatorConfig(e.commitCfg)
 }
 
+// Flush forces all memtable data to sstables before close.
+func (e *Engine) Flush() error {
+	if e == nil || e.engine == nil {
+		return nil
+	}
+	return e.engine.Flush()
+}
+
 // Close closes the compatibility engine.
 func (e *Engine) Close() error {
 	if e == nil {

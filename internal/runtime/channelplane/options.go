@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const (
@@ -83,6 +84,8 @@ type Options struct {
 	PeerClient PeerClient
 	// Observer receives optional metrics and diagnostics callbacks.
 	Observer Observer
+	// Logger receives channel plane diagnostic messages.
+	Logger wklog.Logger
 	// Now returns the current wall clock for metrics and tests.
 	Now func() time.Time
 }

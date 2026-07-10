@@ -9,6 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type channelPlaneLocalOwner interface {
@@ -51,7 +52,28 @@ func (a *Adapter) handleChannelPlaneAppendEnvelope(ctx context.Context, env runt
 		return runtimechannelplane.AppendBatchRemoteResult{Status: runtimechannelplane.RemoteAppendStatusNotLeader, Leader: meta.Leader}
 	}
 	if meta.RouteGeneration != env.RouteEpoch.RouteGeneration || meta.Epoch != env.RouteEpoch.ChannelEpoch || meta.LeaderEpoch != env.RouteEpoch.LeaderEpoch {
-		return runtimechannelplane.AppendBatchRemoteResult{Status: runtimechannelplane.RemoteAppendStatusStaleRoute, Leader: meta.Leader}
+		// Accept if sender has a higher route generation (sender has newer routing info).
+		// Only reject when sender is strictly behind (stale).
+		if env.RouteEpoch.RouteGeneration >= meta.RouteGeneration {
+			a.logger.Info("channelplane RPC: accepting higher route generation",
+				wklog.String("channel_id", env.Request.ChannelID.ID),
+				wklog.Uint64("sent_route_generation", env.RouteEpoch.RouteGeneration),
+				wklog.Uint64("local_route_generation", meta.RouteGeneration),
+			)
+			// Fall through to normal append
+		} else {
+			a.logger.Info("channelplane RPC: stale route mismatch",
+				wklog.String("channel_id", env.Request.ChannelID.ID),
+				wklog.Uint64("sent_route_generation", env.RouteEpoch.RouteGeneration),
+				wklog.Uint64("sent_channel_epoch", env.RouteEpoch.ChannelEpoch),
+				wklog.Uint64("sent_leader_epoch", env.RouteEpoch.LeaderEpoch),
+				wklog.Uint64("local_route_generation", meta.RouteGeneration),
+				wklog.Uint64("local_channel_epoch", meta.Epoch),
+				wklog.Uint64("local_leader_epoch", meta.LeaderEpoch),
+				wklog.Int("local_leader", int(meta.Leader)),
+			)
+			return runtimechannelplane.AppendBatchRemoteResult{Status: runtimechannelplane.RemoteAppendStatusStaleRoute, Leader: meta.Leader}
+		}
 	}
 	result, err := owner.AppendLocalBatch(ctx, env.Request)
 	if err != nil {

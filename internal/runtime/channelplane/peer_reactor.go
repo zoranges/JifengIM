@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 // PeerReactor batches remote channel-owner append effects by target peer.
@@ -41,6 +42,8 @@ type PeerReactorOptions struct {
 	MaxInflightRPC int
 	// RPCTimeout bounds one remote AppendBatches RPC. Zero leaves the caller or parent context deadline unchanged.
 	RPCTimeout time.Duration
+	// Logger receives peer reactor diagnostic messages.
+	Logger wklog.Logger
 }
 
 type peerLaneKey struct {
@@ -470,6 +473,13 @@ func (l *peerLane) flush(tasks []*peerAppendTask) {
 	}
 	resp, err := l.parent.opts.Client.AppendBatches(rpcCtx, l.key.nodeID, req)
 	if err != nil {
+		if logger := l.parent.opts.Logger; logger != nil {
+			logger.Warn("channelplane: peer RPC failed",
+				wklog.Int("target_node", int(l.key.nodeID)),
+				wklog.Int("batch_count", len(kept)),
+				wklog.Error(err),
+			)
+		}
 		for _, task := range kept {
 			l.complete(task, channel.AppendBatchResult{}, err)
 		}
@@ -484,6 +494,17 @@ func (l *peerLane) flush(tasks []*peerAppendTask) {
 	}
 	for i, task := range kept {
 		result, err := appendRemoteResult(resp.Results[i])
+		if err != nil && l.parent.opts.Logger != nil {
+			l.parent.opts.Logger.Info("channelplane: remote append result",
+				wklog.String("status", resp.Results[i].Status),
+				wklog.String("channel_id", task.envelope.Request.ChannelID.ID),
+				wklog.Int("target_node", int(l.key.nodeID)),
+				wklog.Uint64("sent_route_generation", task.envelope.RouteEpoch.RouteGeneration),
+				wklog.Uint64("sent_channel_epoch", task.envelope.RouteEpoch.ChannelEpoch),
+				wklog.Uint64("sent_leader_epoch", task.envelope.RouteEpoch.LeaderEpoch),
+				wklog.Error(err),
+			)
+		}
 		l.complete(task, result, err)
 	}
 }
@@ -506,6 +527,9 @@ func appendRemoteResult(result AppendBatchRemoteResult) (channel.AppendBatchResu
 	case RemoteAppendStatusOK:
 		return result.Result, nil
 	case RemoteAppendStatusNotLeader:
+		if result.Leader != 0 {
+			return channel.AppendBatchResult{}, &NotLeaderError{Leader: result.Leader}
+		}
 		return channel.AppendBatchResult{}, channel.ErrNotLeader
 	case RemoteAppendStatusStaleRoute:
 		return channel.AppendBatchResult{}, ErrStaleRoute

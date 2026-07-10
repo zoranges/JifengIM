@@ -507,6 +507,7 @@ func build(cfg Config) (_ *App, err error) {
 		Resolver:         appChannelPlaneRouteResolver{meta: app.channelMetaSync},
 		LocalOwner:       app.channelLog,
 		PeerClient:       app.nodeClient,
+		Logger:           app.logger.Named("channelplane"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel plane: %w", err)

@@ -310,6 +310,24 @@ func (s *Server) handleChannelAllowlistGet(c *gin.Context) {
 	c.JSON(http.StatusOK, result.Members)
 }
 
+func (s *Server) handleChannelSubscribersGet(c *gin.Context) {
+	channelType, _ := strconv.ParseUint(c.Query("channel_type"), 10, 8)
+	key := channelusecase.ChannelKey{
+		ChannelID:   c.Query("channel_id"),
+		ChannelType: uint8(channelType),
+	}
+	if err := s.requireChannelUsecase(); err != nil {
+		writeLegacyJSONError(c, err.Error())
+		return
+	}
+	result, err := s.channels.ListSubscribers(c.Request.Context(), key)
+	if err != nil {
+		writeLegacyJSONError(c, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, result.Members)
+}
+
 func bindLegacyChannelMember(c *gin.Context, req *channelMemberRequest, requireUIDs bool) bool {
 	if err := c.ShouldBindJSON(req); err != nil {
 		writeLegacyJSONError(c, "数据格式有误！")

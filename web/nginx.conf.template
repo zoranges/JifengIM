@@ -2,9 +2,15 @@ server {
     listen 80;
     server_name _;
 
+    # Docker embedded DNS resolver for dynamic upstream resolution.
+    # Without this, nginx caches the IP of wk-node1 at startup and won't
+    # pick up changes after container restarts, causing 502 errors.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # API proxy to wukongim node1
     location /route {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -12,42 +18,48 @@ server {
     }
 
     location /user/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /channel/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /message/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /conversation/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /streammessage/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /conversations/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -64,7 +76,8 @@ server {
 
     # File upload API
     location /file/ {
-        proxy_pass http://wk-node1:5001;
+        set $api_upstream wk-node1:5001;
+        proxy_pass http://$api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

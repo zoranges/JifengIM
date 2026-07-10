@@ -165,6 +165,7 @@ type ChannelUsecase interface {
 	RemoveAllowlist(ctx context.Context, cmd channelusecase.MemberCommand) error
 	RemoveAllAllowlist(ctx context.Context, key channelusecase.ChannelKey) error
 	ListAllowlist(ctx context.Context, key channelusecase.ChannelKey) (channelusecase.MemberListResult, error)
+	ListSubscribers(ctx context.Context, key channelusecase.ChannelKey) (channelusecase.MemberListResult, error)
 }
 
 // UserUsecase coordinates compatible user token, device, online-status, and system UID routes.

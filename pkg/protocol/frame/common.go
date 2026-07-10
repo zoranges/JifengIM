@@ -157,6 +157,7 @@ const (
 	ReasonNotSupportHeader      // 不支持的header
 	ReasonClientKeyIsEmpty      // clientKey 是空的
 	ReasonRateLimit             // 速率限制
+	ReasonUserNotExist          // 用户不存在
 	ReasonNotSupportChannelType // 不支持的频道类型
 	ReasonDisband               // 频道已解散
 	ReasonSendBan               // 发送被封禁

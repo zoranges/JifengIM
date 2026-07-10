@@ -297,6 +297,14 @@ func Open(path string) (*DB, error) {
 	return &DB{meta: NewDB(eng), engine: eng}, nil
 }
 
+// Flush forces memtable data to sstables so a subsequent Close is safe.
+func (db *DB) Flush() error {
+	if db == nil || db.engine == nil {
+		return nil
+	}
+	return db.engine.Flush()
+}
+
 // Close closes the metadata DB.
 func (db *DB) Close() error {
 	if db == nil || db.engine == nil {

@@ -2,10 +2,12 @@ import axios, { AxiosResponse } from "axios";
 import { Channel, ChannelTypePerson, Conversation, Message, SyncOptions, WKSDK } from "wukongimjssdk";
 import { Convert } from "./convert";
 import { Buffer } from "buffer";
+import { applyRevokes } from "./revokeStore";
 
 
  export class CMDType {
-    static CMDTypeClearUnread = "clearUnread" 
+    static CMDTypeClearUnread = "clearUnread"
+    static CMDTypeMessageRevoke = "messageRevoke"
  }
 
 export class APIClientConfig {
@@ -154,6 +156,7 @@ export default class APIClient {
                 resultMessages.push(message);
             });
         }
+        applyRevokes(resultMessages, channel.channelID, channel.channelType)
         return resultMessages
     }
 
@@ -192,18 +195,26 @@ export default class APIClient {
     // 此处仅做演示
     // 此方法应该在自己的业务后端调用
     sendCMD = async (channel:Channel,cmd:string,param?:any) => {
-        // 转换成base64
-        const buffer = Buffer.from(JSON.stringify({
+        const cmdPayload = {
             type: 99, // cmd固定type为99
             cmd: cmd,
             param: param,
-        }), 'utf-8');
+        }
+        console.log('[APIClient.sendCMD] sending CMD:', {
+            channelID: channel.channelID,
+            channelType: channel.channelType,
+            cmdPayload: cmdPayload,
+            uid: WKSDK.shared().config.uid,
+        })
+        // 转换成base64
+        const buffer = Buffer.from(JSON.stringify(cmdPayload), 'utf-8');
 
         const base64 = buffer.toString('base64');
+        console.log('[APIClient.sendCMD] base64 payload:', base64)
 
-      return  APIClient.shared.post('/message/send', {
+        const requestBody = {
             "header": {// 消息头
-              "no_persist": 1, // 是否不存储消息 0.存储 1.不存储
+              "no_persist": 0, // 是否不存储消息 0.存储 1.不存储
               "red_dot": 1, // 是否显示红点计数，0.不显示 1.显示
               "sync_once":1 // 是否是写扩散，这里一般是0，只有cmd消息才是1
             },
@@ -212,7 +223,40 @@ export default class APIClient {
             "channel_type": channel.channelType, // 接收频道类型  1.个人频道 2.群聊频道
             "payload": base64, // 消息内容，base64编码
             "subscribers": [] // 订阅者 如果此字段有值，表示消息只发给指定的订阅者,没有值则发给频道内所有订阅者
-          })
+        }
+        console.log('[APIClient.sendCMD] request body:', JSON.stringify(requestBody, null, 2))
+
+      return  APIClient.shared.post('/message/send', requestBody).then((res: any) => {
+          console.log('[APIClient.sendCMD] response:', res)
+          return res
+      }).catch((err: any) => {
+          console.error('[APIClient.sendCMD] error:', err)
+          throw err
+      })
+    }
+
+    revokeMessage = async (channel: Channel, messageID: string, messageSeq: number) => {
+        console.log('[APIClient.revokeMessage] revoking message:', {
+            channelID: channel.channelID,
+            channelType: channel.channelType,
+            messageID: messageID,
+            messageSeq: messageSeq,
+            uid: WKSDK.shared().config.uid,
+        })
+        const result = await this.sendCMD(channel, 'messageRevoke', {
+            message_id: messageID,
+            message_seq: messageSeq,
+        })
+        console.log('[APIClient.revokeMessage] sendCMD result:', result)
+        return result
+    }
+
+    deleteConversation = async (channel: Channel) => {
+        return APIClient.shared.post('/conversations/delete', {
+            uid: WKSDK.shared().config.uid,
+            channel_id: channel.channelID,
+            channel_type: channel.channelType,
+        })
     }
 
     messageStreamStart = (param:any) => {

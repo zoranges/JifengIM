@@ -16,7 +16,10 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := pebble.Open(path, &pebble.Options{})
+	db, err := pebble.Open(path, &pebble.Options{
+		WALBytesPerSync: 512 << 10,
+		BytesPerSync:    1 << 20,
+	})
 	if err != nil {
 		return nil, err
 	}

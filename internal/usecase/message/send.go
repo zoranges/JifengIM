@@ -430,7 +430,11 @@ func (a *App) appendDurableBatch(ctx context.Context, req channel.AppendBatchReq
 		fields := append([]wklog.Field{
 			wklog.Event("message.send.append_batch.failed"),
 		}, messageLogFields(req.ChannelID, appendBatchFromUID(req))...)
-		fields = append(fields, wklog.Error(err))
+		fields = append(fields,
+			wklog.Error(err),
+			wklog.Uint64("expected_channel_epoch", req.ExpectedChannelEpoch),
+			wklog.Uint64("expected_leader_epoch", req.ExpectedLeaderEpoch),
+		)
 		a.sendLogger().Error("append batch failed", fields...)
 	}
 	observeMessageAppend(a.appendMetrics, "channelplane", appendMetricResult(err), time.Since(startedAt))

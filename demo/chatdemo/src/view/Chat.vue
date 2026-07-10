@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import APIClient from '../services/APIClient'
 import { avatarUrl } from '../services/utils'
 import { useRouter } from 'vue-router'
 import {
     WKSDK, Channel, ChannelTypePerson, ChannelTypeGroup, MessageStatus,
-    ConnectionInfo,
+    ConnectionInfo, Mention, MessageText, Setting,
 } from 'wukongimjssdk'
+
+// Local constants to prevent tree-shaking of MessageStatus (used in template)
+const MsgStatusWait = MessageStatus.Wait
+const MsgStatusFail = MessageStatus.Fail
 import { ConnectStatus } from 'wukongimjssdk'
 import type { ConnectStatusListener } from 'wukongimjssdk'
 import Conversation from '../components/Conversation/index.vue'
@@ -15,6 +19,7 @@ import { useMarkdown } from '../composables/useMarkdown'
 import { useFileUpload } from '../composables/useFileUpload'
 import { useChatMessages } from '../composables/useChatMessages'
 import GroupFilesPanel from './GroupFiles.vue'
+import CalendarPanel from '../components/Calendar.vue'
 
 useMarkdown()
 
@@ -24,6 +29,56 @@ const showSettingPanel = ref(false)
 const title = ref('')
 const sidebarVisible = ref(true)
 const showFilesPanel = ref(false)
+
+// Voice recording
+const recording = ref(false)
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+
+const startRecording = async () => {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        mediaRecorder = new MediaRecorder(stream)
+        audioChunks = []
+        mediaRecorder.ondataavailable = (e) => { audioChunks.push(e.data) }
+        mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop())
+            if (audioChunks.length === 0) return
+            const blob = new Blob(audioChunks, { type: 'audio/webm' })
+            const formData = new FormData()
+            formData.append('file', blob, 'voice.webm')
+            try {
+                const xhr = new XMLHttpRequest()
+                xhr.open('POST', `${APIClient.shared.config.apiURL}/file/upload`)
+                xhr.onload = () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const data = JSON.parse(xhr.responseText)
+                            const url = data.url
+                            if (url) {
+                                const msgText = new MessageText(`{voice:${JSON.stringify({url, duration: Math.round(blob.size / 4000)})}}`)
+                                WKSDK.shared().chatManager.send(msgText, to.value, Setting.fromUint8(0))
+                                scrollBottom()
+                            }
+                        } catch { /* ignore */ }
+                    }
+                }
+                xhr.send(formData)
+            } catch { /* ignore */ }
+        }
+        mediaRecorder.start()
+        recording.value = true
+    } catch {
+        alert('无法获取麦克风权限')
+    }
+}
+
+const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop()
+    }
+    recording.value = false
+}
 
 const channelID = ref('')
 const p2p = ref(true)
@@ -48,9 +103,13 @@ const {
     toggleSearch, toggleFilesOnly,
     members, onlineCount,
     clearMessages,
+    searchMatchCount,
+    replyingTo, setReplyingTo, cancelReply,
+    showCalendar, toggleCalendar, scrollToDate,
+    expireSeconds,
 } = useChatMessages(to, uid || '', chatRef)
 
-const { fileInput, uploading, uploadProgress, chooseFile: _chooseFile, onFileChange: _onFileChange } = useFileUpload(to, scrollBottom)
+const { fileInput, uploading, uploadProgress, chooseFile: _chooseFile, onFileChange: _onFileChange, uploadAndSendFile } = useFileUpload(to, scrollBottom)
 
 const chooseFile = () => {
     if (!to.value || to.value.channelID.trim() === '') {
@@ -98,15 +157,35 @@ const connectIM = (addr: string) => {
     config.sendCountOfEach = 100000
     WKSDK.shared().config = config
 
-    connectStatusListener = (status: ConnectStatus, _reasonCode?: number, connectionInfo?: ConnectionInfo) => {
+    connectStatusListener = (status: ConnectStatus, reasonCode?: number, connectionInfo?: ConnectionInfo) => {
+        const statusNames: Record<number, string> = {
+            [ConnectStatus.Disconnect]: '已断开',
+            [ConnectStatus.Connected]: '已连接',
+            [ConnectStatus.Connecting]: '连接中',
+            [ConnectStatus.ConnectFail]: '连接失败',
+            [ConnectStatus.ConnectKick]: '被踢出',
+        }
+        const now = new Date().toISOString()
+        console.log(`[CONN] 连接状态变化: status=${status}(${statusNames[status] || '未知'}) reasonCode=${reasonCode ?? '-'} nodeId=${connectionInfo?.nodeId ?? '-'} time=${now}`)
         if (status === ConnectStatus.Connected) {
             if (connectionInfo) {
                 title.value = `${uid || ''} (已连接 · 节点${connectionInfo.nodeId})`
+                console.log(`[CONN] ✓ 已连接到节点${connectionInfo.nodeId}`)
             } else {
                 title.value = `${uid || ''} (已连接)`
+                console.log(`[CONN] ✓ 已连接 (无connectionInfo)`)
             }
-        } else {
+        } else if (status === ConnectStatus.Disconnect) {
             title.value = `${uid || ''} (已断开)`
+            console.warn(`[CONN] ✗ 连接断开 reasonCode=${reasonCode}`)
+        } else if (status === ConnectStatus.ConnectFail) {
+            title.value = `${uid || ''} (连接失败)`
+            console.error(`[CONN] ✗ 连接失败 reasonCode=${reasonCode}`)
+        } else if (status === ConnectStatus.ConnectKick) {
+            title.value = `${uid || ''} (被踢出)`
+            console.warn(`[CONN] ✗ 被踢出 reasonCode=${reasonCode}`)
+        } else {
+            title.value = `${uid || ''} (${statusNames[status] || status})`
         }
     }
     WKSDK.shared().connectManager.addConnectStatusListener(connectStatusListener)
@@ -166,6 +245,26 @@ const logout = () => {
     router.push({ path: '/' })
 }
 
+const onPaste = async (e: ClipboardEvent) => {
+    if (!to.value || to.value.channelID.trim() === '') return
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+            e.preventDefault()
+            const file = items[i].getAsFile()
+            if (!file) continue
+            try {
+                await uploadAndSendFile(file)
+                scrollBottom()
+            } catch (err: any) {
+                alert('图片上传失败: ' + (err.message || '未知错误'))
+            }
+            break
+        }
+    }
+}
+
 const onEnter = () => {
     if (hasHandled.value || isComposing.value) return
     onSend()
@@ -180,8 +279,40 @@ const onSend = () => {
         showSettingPanel.value = true
         return
     }
+    // Clear draft before sending
+    const conv = WKSDK.shared().conversationManager.findConversation(to.value)
+    if (conv && conv.remoteExtra) conv.remoteExtra.draft = ''
     _onSend()
 }
+
+// Draft save/restore
+let draftSaving = false
+let oldChannel = ''
+watch(to, (channel) => {
+    // Save draft of previous channel
+    if (oldChannel && oldChannel !== channel.channelID) {
+        const oldConv = WKSDK.shared().conversationManager.findConversation(new Channel(oldChannel, to.value.channelType))
+        if (oldConv && oldConv.remoteExtra && text.value.trim()) {
+            oldConv.remoteExtra.draft = text.value
+        }
+    }
+    // Restore draft of new channel
+    if (channel.channelID) {
+        const conv = WKSDK.shared().conversationManager.findConversation(channel)
+        text.value = (conv?.remoteExtra?.draft) || ''
+    } else {
+        text.value = ''
+    }
+    oldChannel = channel.channelID || ''
+}, { immediate: true })
+
+watch(text, (val) => {
+    if (!to.value?.channelID) return
+    const conv = WKSDK.shared().conversationManager.findConversation(to.value)
+    if (conv && conv.remoteExtra) {
+        conv.remoteExtra.draft = val || ''
+    }
+})
 const onCustomMessageSend = () => {
     if (!to.value || to.value.channelID.trim() === '') {
         showSettingPanel.value = true
@@ -200,6 +331,30 @@ const toggleFilesPanel = () => {
         showFilesOnly.value = false
     }
 }
+
+// @ mention
+const showMentionMenu = ref(false)
+const insertMention = (label: string) => {
+    text.value = text.value + label + ' '
+    showMentionMenu.value = false
+}
+
+// Unread count
+const totalUnread = ref(0)
+let unreadTimer: ReturnType<typeof setInterval> | null = null
+const updateUnreadCount = () => {
+    const count = WKSDK.shared().conversationManager.getAllUnreadCount()
+    totalUnread.value = count
+    document.title = count > 0 ? `(${count > 99 ? '99+' : count}) 疾风即时` : '疾风即时'
+}
+onMounted(() => {
+    unreadTimer = setInterval(updateUnreadCount, 3000)
+})
+onUnmounted(() => {
+    if (unreadTimer) clearInterval(unreadTimer)
+})
+
+
 </script>
 <template>
     <div class="chat">
@@ -210,6 +365,7 @@ const toggleFilesPanel = () => {
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 12h18M3 6h18M3 18h18" />
                     </svg>
+                    <span class="unread-badge" v-if="totalUnread > 0">{{ totalUnread > 99 ? '99+' : totalUnread }}</span>
                 </button>
                 <span class="brand">疾风即时</span>
             </div>
@@ -223,6 +379,11 @@ const toggleFilesPanel = () => {
                 <button class="icon-btn" :class="{ active: showFilesPanel }" @click="toggleFilesPanel" title="文件管理" v-if="to.channelID">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                         <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/>
+                    </svg>
+                </button>
+                <button class="icon-btn" :class="{ active: showCalendar }" @click="toggleCalendar" title="日历" v-if="to.channelID">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
                     </svg>
                 </button>
                 <button class="icon-btn" :class="{ active: searchVisible }" @click="toggleSearch" title="搜索" v-if="to.channelID">
@@ -283,8 +444,8 @@ const toggleFilesPanel = () => {
                         class="search-input"
                         autofocus
                     />
-                    <span class="search-count" v-if="searchQuery && displayMessages.length !== messages.length">
-                        {{ displayMessages.length }} 条结果
+                    <span class="search-count" v-if="searchQuery">
+                        {{ searchMatchCount }} 条结果
                     </span>
                 </div>
 
@@ -292,23 +453,27 @@ const toggleFilesPanel = () => {
                 <div class="message-list" v-on:scroll="handleScroll" ref="chatRef" v-if="to.channelID">
                     <div class="load-more" v-if="pulldowning">加载中...</div>
                     <template v-for="(m, i) in displayMessages" :key="m.clientMsgNo">
-                        <div class="msg-time-divider" v-if="i === 0 || (m.timestamp - displayMessages[i-1].timestamp) > 300">{{ formatMsgTime(m.timestamp) }}</div>
+<div class="msg-time-divider" v-if="i === 0 || (m.timestamp - displayMessages[i-1].timestamp) > 300">{{ formatMsgTime(m.timestamp) }}</div>
                         <div class="msg-system" v-if="isSystemMessage(m)">
                             <span>{{ m.content?.text }}</span>
                         </div>
-                        <div class="msg-row" v-else :class="{ 'msg-sent': m.send, 'msg-first': isFirstInGroup(i), 'msg-last': isLastInGroup(i) }" :id="m.clientMsgNo">
+                        <div class="msg-row" v-else :class="{
+                            'msg-sent': m.send,
+                            'msg-first': isFirstInGroup(i),
+                            'msg-last': isLastInGroup(i),
+                        }" :id="m.clientMsgNo">
                             <div class="msg-avatar" v-if="!m.send">
                                 <img :src="avatarUrl(m.fromUID)" />
                             </div>
                             <div class="msg-body" :class="{ 'msg-body-sent': m.send }">
-                                <div class="msg-sender" v-if="!m.send && isFirstInGroup(i)">{{ m.fromUID }}</div>
+                                <div class="msg-sender" v-if="!m.send">{{ m.fromUID }}</div>
                                 <div class="msg-bubble" :class="{ 'bubble-sent': m.send, 'bubble-recv': !m.send }">
-                                    <div class="msg-status" v-if="m.send && m.status === MessageStatus.Wait">
+                                    <div class="msg-status" v-if="m.send && m.status === MsgStatusWait">
                                         <span class="sending-dots"><i>.</i><i>.</i><i>.</i></span>
                                     </div>
-                                    <MessageUI :message="m" :searchQuery="searchQuery" />
+                                    <MessageUI :message="m" :searchQuery="searchQuery" @reply="setReplyingTo" />
                                 </div>
-                                <div class="msg-time" v-if="m.send && m.status === MessageStatus.Fail">发送失败</div>
+                                <div class="msg-time msg-fail" v-if="m.send && m.status === MsgStatusFail">{{ m.failReason || '发送失败' }}</div>
                             </div>
                             <div class="msg-avatar" v-if="m.send">
                                 <img :src="avatarUrl(m.fromUID)" />
@@ -320,7 +485,19 @@ const toggleFilesPanel = () => {
                 <!-- Input area -->
                 <div class="input-area" v-if="to.channelID">
                     <div class="upload-bar" v-if="uploading">
-                        <span class="upload-text">上传中...</span>
+                        <span class="upload-text">上传中 {{ uploadProgress }}%</span>
+                        <div class="upload-progress-track"><div class="upload-progress-fill" :style="{ width: uploadProgress + '%' }"></div></div>
+                    </div>
+                    <div class="reply-bar" v-if="replyingTo">
+                        <div class="reply-bar-content">
+                            <span class="reply-bar-label">回复 {{ replyingTo.fromUID }}:</span>
+                            <span class="reply-bar-text">{{ (replyingTo.content as any)?.conversationDigest || (replyingTo.content as any)?.text || '' }}</span>
+                        </div>
+                        <button class="reply-bar-close" @click="cancelReply" title="取消回复">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
                     </div>
                     <div class="input-row">
                         <input
@@ -335,6 +512,24 @@ const toggleFilesPanel = () => {
                                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                             </svg>
                         </button>
+                        <!-- @mention button (group only) -->
+                        <div class="mention-wrap" v-if="!p2p">
+                            <button class="attach-btn mention-btn" @click="showMentionMenu = !showMentionMenu" title="@提及">
+                                <span style="font-weight:700;font-size:18px;">@</span>
+                            </button>
+                            <div class="mention-menu" v-if="showMentionMenu" @click.stop>
+                                <button class="mention-item" @click="insertMention('@所有人 ')">
+                                    <span class="mention-icon">@</span>
+                                    <span>所有人</span>
+                                </button>
+                                <div class="mention-divider" v-if="members.size > 0"></div>
+                                <button class="mention-item" v-for="uid in Array.from(members)" :key="uid" @click="insertMention('@'+uid+' ')">
+                                    <span class="mention-icon">@</span>
+                                    <span>{{ uid }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <!-- Expire selector (disabled) -->
                         <input
                             :placeholder="msgInputPlaceholder"
                             v-model="text"
@@ -342,7 +537,13 @@ const toggleFilesPanel = () => {
                             @keydown.enter="onKeydown"
                             @compositionstart="isComposing = true"
                             @compositionend="isComposing = false"
+                            @paste="onPaste"
                         />
+                        <button class="voice-btn" :class="{ recording: recording }" @mousedown.prevent="startRecording" @mouseup.prevent="stopRecording" @touchstart.prevent="startRecording" @touchend.prevent="stopRecording" title="按住录音">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                            </svg>
+                        </button>
                         <button class="send-btn" @click="onSend">
                             <svg viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
@@ -357,8 +558,10 @@ const toggleFilesPanel = () => {
                 v-if="to.channelID && showFilesPanel"
                 :messages="messages"
                 :channelName="to.channelID"
+                :channelType="to.channelType"
                 @close="showFilesPanel = false"
             />
+
         </div>
 
         <!-- Setting modal -->
@@ -375,6 +578,14 @@ const toggleFilesPanel = () => {
                 </div>
             </div>
         </transition>
+
+        <!-- Calendar panel -->
+        <CalendarPanel
+            :visible="showCalendar"
+            :messages="messages"
+            @select="scrollToDate"
+            @close="showCalendar = false"
+        />
     </div>
 </template>
 
@@ -468,6 +679,7 @@ const toggleFilesPanel = () => {
     background: transparent;
     color: var(--text-secondary);
     border: none;
+    position: relative;
     cursor: pointer;
     transition: all var(--transition);
 }
@@ -635,6 +847,7 @@ const toggleFilesPanel = () => {
     flex-shrink: 0;
 }
 
+
 /* ===== Message row ===== */
 .msg-row {
     display: flex;
@@ -647,7 +860,6 @@ const toggleFilesPanel = () => {
 
 .msg-row.msg-sent {
     align-self: flex-end;
-    flex-direction: row-reverse;
 }
 
 .msg-row.msg-first {
@@ -711,9 +923,10 @@ const toggleFilesPanel = () => {
 
 /* Sender name */
 .msg-sender {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-bottom: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
     margin-left: 4px;
     letter-spacing: 0.3px;
 }
@@ -746,20 +959,20 @@ const toggleFilesPanel = () => {
     border: 1px solid rgba(0,0,0,0.04);
 }
 
-/* Grouped: first received message has top-left corner */
+/* Grouped: first received message (top-left sharp, pointing to avatar above) */
 .msg-first .bubble-recv,
 .msg-first.msg-last .bubble-recv {
-    border-radius: 18px 18px 18px 6px;
+    border-radius: 6px 18px 18px 18px;
 }
 
-/* Grouped: middle received messages */
+/* Grouped: middle received messages (both left corners sharp) */
 .msg-row:not(.msg-first):not(.msg-last) .bubble-recv {
     border-radius: 6px 18px 18px 6px;
 }
 
-/* Grouped: last received message has bottom-left corner */
+/* Grouped: last received message (bottom-left sharp) */
 .msg-last:not(.msg-first) .bubble-recv {
-    border-radius: 6px 18px 18px 18px;
+    border-radius: 18px 18px 18px 6px;
 }
 
 .bubble-sent {
@@ -768,20 +981,20 @@ const toggleFilesPanel = () => {
     border-radius: 18px 6px 18px 18px;
 }
 
-/* Grouped: first sent message */
+/* Grouped: first sent message (top-right sharp, pointing to avatar above) */
 .msg-first .bubble-sent,
 .msg-first.msg-last .bubble-sent {
-    border-radius: 18px 18px 6px 18px;
+    border-radius: 18px 6px 18px 18px;
 }
 
-/* Grouped: middle sent messages */
+/* Grouped: middle sent messages (both right corners sharp) */
 .msg-row:not(.msg-first):not(.msg-last) .bubble-sent {
     border-radius: 18px 6px 6px 18px;
 }
 
-/* Grouped: last sent message */
+/* Grouped: last sent message (bottom-right sharp) */
 .msg-last:not(.msg-first) .bubble-sent {
-    border-radius: 18px 6px 18px 18px;
+    border-radius: 18px 18px 6px 18px;
 }
 
 /* Dark mode overrides */
@@ -877,6 +1090,57 @@ const toggleFilesPanel = () => {
     box-shadow: 0 4px 12px rgba(79, 110, 247, 0.4);
 }
 
+.expire-select {
+    height: 34px;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    outline: none;
+    flex-shrink: 0;
+}
+
+.expire-select:focus,
+.expire-select:hover {
+    border-color: var(--primary);
+    color: var(--text);
+}
+
+.voice-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.voice-btn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.voice-btn.recording {
+    background: #ef4444;
+    border-color: #ef4444;
+    color: #fff;
+    animation: voicePulse 1s infinite;
+}
+
+@keyframes voicePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+}
+
 .send-btn svg {
     width: 18px;
     height: 18px;
@@ -907,16 +1171,86 @@ const toggleFilesPanel = () => {
     cursor: not-allowed;
 }
 
+.reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    background: rgba(79,110,247,0.06);
+    border-left: 3px solid var(--primary);
+    border-radius: 0 8px 8px 0;
+}
+
+.reply-bar-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.reply-bar-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.reply-bar-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reply-bar-close {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.reply-bar-close:hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+}
+
 .upload-bar {
     display: flex;
     align-items: center;
+    gap: 12px;
     padding: 4px 0 8px;
 }
 
 .upload-text {
     font-size: 12px;
     color: var(--text-muted);
-    animation: pulse 1.5s infinite;
+    white-space: nowrap;
+}
+
+.upload-progress-track {
+    flex: 1;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    max-width: 200px;
+}
+
+.upload-progress-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 2px;
+    transition: width 0.3s ease;
 }
 
 @keyframes pulse {
@@ -1043,5 +1377,91 @@ const toggleFilesPanel = () => {
 .modal-enter-from .modal-card,
 .modal-leave-to .modal-card {
     transform: scale(0.9) translateY(20px);
+}
+
+/* Date jump highlight */
+:global(.date-jump-highlight) {
+    animation: dateJumpPulse 0.6s ease-in-out 3;
+}
+
+@keyframes dateJumpPulse {
+    0%, 100% { background: transparent; }
+    50% { background: rgba(79, 110, 247, 0.12); border-radius: 8px; }
+}
+
+/* Unread badge on sidebar toggle */
+.unread-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+/* @mention */
+.mention-wrap {
+    position: relative;
+}
+
+.mention-menu {
+    position: absolute;
+    bottom: 44px;
+    left: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-lg);
+    padding: 4px;
+    min-width: 140px;
+    z-index: 100;
+}
+
+.mention-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.mention-item:hover {
+    background: var(--bg-elevated);
+    color: var(--primary);
+}
+
+.mention-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 12px;
+}
+
+.mention-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 </style>

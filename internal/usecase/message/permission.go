@@ -140,6 +140,16 @@ func (a *App) checkPersonSendPermission(ctx context.Context, cmd SendCommand) (f
 	if a.systemUIDs != nil && a.systemUIDs.IsSystemUID(receiver) {
 		return frame.ReasonSuccess, nil
 	}
+
+	// 检查接收方用户是否存在
+	_, err = a.identities.GetUser(ctx, receiver)
+	if err != nil {
+		if errors.Is(err, metadb.ErrNotFound) {
+			return frame.ReasonUserNotExist, nil
+		}
+		return frame.ReasonSystemError, err
+	}
+
 	key := channelmembers.ChannelKey{ChannelID: receiver, ChannelType: frame.ChannelTypePerson}
 	denied, err := a.permissions.ContainsChannelSubscriber(ctx, channelmembers.DenylistChannelID(key), int64(frame.ChannelTypePerson), cmd.FromUID)
 	if err != nil {

@@ -71,7 +71,8 @@ func (s *Server) registerChannelRoutes() {
 	s.engine.POST("/channel/whitelist_remove", s.handleChannelAllowlistRemove)
 	s.engine.POST("/channel/whitelist_remove_all", s.handleChannelAllowlistRemoveAll)
 	s.engine.GET("/channel/whitelist", s.handleChannelAllowlistGet)
-}
+	s.engine.GET("/channel/subscribers", s.handleChannelSubscribersGet)
+	}
 
 func (s *Server) handleChannelUpsert(c *gin.Context) {
 	var req channelUpsertRequest
@@ -318,6 +319,24 @@ func (s *Server) handleChannelAllowlistGet(c *gin.Context) {
 		return
 	}
 	result, err := s.channels.ListAllowlist(c.Request.Context(), key)
+	if err != nil {
+		writeJSONError(c, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, result.Members)
+}
+
+func (s *Server) handleChannelSubscribersGet(c *gin.Context) {
+	channelType, _ := strconv.ParseUint(c.Query("channel_type"), 10, 8)
+	key := channelusecase.ChannelKey{
+		ChannelID:   c.Query("channel_id"),
+		ChannelType: uint8(channelType),
+	}
+	if err := s.requireChannelUsecase(); err != nil {
+		writeJSONError(c, err.Error())
+		return
+	}
+	result, err := s.channels.ListSubscribers(c.Request.Context(), key)
 	if err != nil {
 		writeJSONError(c, err.Error())
 		return

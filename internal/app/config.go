@@ -789,7 +789,7 @@ type ConversationConfig struct {
 	ActiveHintFlushBatchSize int
 	// GroupActiveFanoutInterval throttles subscriber fanout for group active hints.
 	GroupActiveFanoutInterval time.Duration
-	// GroupActiveFanoutMaxSubscribers caps subscriber fanout for large groups; zero disables group fanout.
+	// GroupActiveFanoutMaxSubscribers caps subscriber fanout for large groups; zero uses default (1000).
 	GroupActiveFanoutMaxSubscribers int
 }
 
@@ -1411,6 +1411,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Conversation.SubscriberPageSize <= 0 {
 		c.Conversation.SubscriberPageSize = 512
+	}
+	if c.Conversation.GroupActiveFanoutMaxSubscribers <= 0 {
+		c.Conversation.GroupActiveFanoutMaxSubscribers = 1000
 	}
 	if c.Conversation.ActiveHintFlushInterval <= 0 {
 		c.Conversation.ActiveHintFlushInterval = 10 * time.Second

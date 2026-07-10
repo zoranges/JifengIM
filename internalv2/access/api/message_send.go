@@ -48,6 +48,7 @@ func (s *Server) registerMessageRoutes() {
 	s.engine.POST("/message/sync", s.handleMessageSync)
 	s.engine.POST("/message/syncack", s.handleMessageSyncAck)
 	s.engine.POST("/channel/messagesync", s.handleChannelMessageSync)
+	s.engine.POST("/channel/messageextra/sync", s.handleChannelMessageExtraSync)
 }
 
 func (s *Server) handleSendMessage(c *gin.Context) {

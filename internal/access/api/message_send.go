@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 
 	"github.com/WuKongIM/WuKongIM/internal/observability/diagnostics/tracectx"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	"github.com/gin-gonic/gin"
 )
 
@@ -78,6 +80,26 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 	reqCtx, traceCtx := tracectx.Ensure(reqCtx, nil)
 	noPersist := req.Header.NoPersist != 0 || req.NoPersist != 0
 	syncOnce := req.Header.SyncOnce != 0 || req.SyncOnce != 0
+
+	// 调试日志：记录所有CMD/撤回消息
+	if syncOnce {
+		var debugPayload map[string]interface{}
+		payloadStr := string(payload)
+		if json.Unmarshal(payload, &debugPayload) == nil {
+			if cmd, ok := debugPayload["cmd"]; ok {
+				s.logger.Info("handleSendMessage CMD消息",
+					wklog.String("from_uid", req.FromUID),
+					wklog.String("channel_id", req.ChannelID),
+					wklog.Int("channel_type", int(req.ChannelType)),
+					wklog.Bool("sync_once", syncOnce),
+					wklog.Bool("no_persist", noPersist),
+					wklog.String("cmd", cmd.(string)),
+					wklog.String("payload", payloadStr),
+				)
+			}
+		}
+	}
+
 	channelID := req.ChannelID
 	channelType := req.ChannelType
 	if requestScoped {
@@ -97,6 +119,11 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		ProtocolVersion:    frame.LatestVersion,
 	})
 	if err != nil {
+		s.logger.Error("handleSendMessage Send失败",
+			wklog.String("from_uid", req.FromUID),
+			wklog.String("channel_id", req.ChannelID),
+			wklog.Error(err),
+		)
 		if status, msg, ok := mapSendError(err); ok {
 			writeJSONError(c, status, msg)
 			return
@@ -104,6 +131,14 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		writeJSONError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	s.logger.Info("handleSendMessage Send成功",
+		wklog.String("from_uid", req.FromUID),
+		wklog.String("channel_id", req.ChannelID),
+		wklog.Int64("message_id", result.MessageID),
+		wklog.Uint64("message_seq", result.MessageSeq),
+		wklog.Int("reason", int(result.Reason)),
+	)
 
 	c.JSON(http.StatusOK, sendMessageResponse{
 		MessageID:  result.MessageID,
