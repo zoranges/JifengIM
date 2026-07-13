@@ -16,12 +16,13 @@ function getManagerProxyTarget(env: Record<string, string | undefined>) {
 }
 
 export function createViteConfig(
-  configEnv: Pick<ConfigEnv, "mode">,
+  configEnv: ConfigEnv,
   env?: Record<string, string | undefined>,
 ): UserConfig {
   const resolvedEnv = env ?? { ...loadEnv(configEnv.mode, process.cwd(), ""), ...process.env }
 
   return {
+    base: configEnv.command === "build" ? "/admin/" : "/",
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
