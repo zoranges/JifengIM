@@ -1,5 +1,6 @@
 import { Channel, ChannelInfo, SyncOptions, WKSDK } from "wukongimjssdk"
 import APIClient from "./APIClient"
+import { authStore } from "./authStore"
 
 
 
@@ -19,16 +20,52 @@ export function initDataSource() {
 
     // 获取频道信息
     WKSDK.shared().config.provider.channelInfoCallback = async (channel: Channel) => {
-        // 这里仅做演示，实际应该是请求自己业务端的接口，然后返回自己业务端的频道信息，然后填充ChannelInfo,这样在UI的各处就可以很容易的获取到频道的业务信息
+        let title = channel.channelID.substring(0, 1).toUpperCase()
+        let orgData: Record<string, any> = {}
+
+        // Fetch group metadata from biz backend for group channels
+        if (channel.channelType === 2) {
+            try {
+                const resp = await fetch(`/api/biz/groups/${channel.channelID}`, { headers: authStore.authHeaders })
+                if (resp.ok) {
+                    const group = await resp.json()
+                    title = group.name || title
+                    const nicknames: Record<string, string> = {}
+                    if (group.members) {
+                        for (const m of group.members) {
+                            if (m.nickname) nicknames[m.uid] = m.nickname
+                        }
+                    }
+                    orgData = {
+                        groupName: group.name,
+                        ownerUID: group.owner_uid,
+                        memberNicknames: nicknames,
+                    }
+                }
+            } catch { /* fallback to default */ }
+        }
+
+        // For person channels, fetch the other user's name
+        if (channel.channelType === 1) {
+            try {
+                const resp = await fetch(`/api/biz/members/directory/${channel.channelID}`, { headers: authStore.authHeaders })
+                if (resp.ok) {
+                    const user = await resp.json()
+                    title = user.name || title
+                    orgData = { peerName: user.name, peerDept: user.department, peerRole: user.role }
+                }
+            } catch { /* fallback to default */ }
+        }
+
         let channelInfo: ChannelInfo = {
-            title: channel.channelID.substring(0, 1).toUpperCase(),
-            logo: `https://api.dicebear.com/9.x/adventurer/svg?seed=${channel.channelID}&radius=50&backgroundType=gradientLinear&backgroundColor=ffd5dc`,
-            mute: false, // 是否免打扰
-            top: false, // 是否置顶
-            orgData: {}, // 自己独有的业务数据可以放到这里
-            online: false, // 是否在线
-            lastOffline: 0, // 最后离线时间
-            channel: channel 
+            title: title,
+            logo: '',
+            mute: false,
+            top: false,
+            orgData: orgData,
+            online: false,
+            lastOffline: 0,
+            channel: channel
         }
         return channelInfo
     }

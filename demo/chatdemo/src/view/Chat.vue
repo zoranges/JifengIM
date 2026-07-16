@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import APIClient from '../services/APIClient'
-import { avatarUrl } from '../services/utils'
 import { useRouter } from 'vue-router'
 import {
     WKSDK, Channel, ChannelTypePerson, ChannelTypeGroup, MessageStatus,
-    ConnectionInfo, Mention, MessageText, Setting,
+    ConnectionInfo, Mention, MessageText, Setting, MessageContentType,
 } from 'wukongimjssdk'
+import type { Message } from 'wukongimjssdk'
 
 // Local constants to prevent tree-shaking of MessageStatus (used in template)
 const MsgStatusWait = MessageStatus.Wait
@@ -20,6 +20,19 @@ import { useFileUpload } from '../composables/useFileUpload'
 import { useChatMessages } from '../composables/useChatMessages'
 import GroupFilesPanel from './GroupFiles.vue'
 import CalendarPanel from '../components/Calendar.vue'
+import CreateGroupModal from '../components/CreateGroupModal.vue'
+import JoinGroupModal from '../components/JoinGroupModal.vue'
+import GroupInfoPanel from '../components/GroupInfoPanel.vue'
+import GroupSettingsModal from '../components/GroupSettingsModal.vue'
+import MyGroupsList from '../components/MyGroupsList.vue'
+import EnterpriseMembers from '../components/EnterpriseMembers.vue'
+import InviteMembersModal from '../components/InviteMembersModal.vue'
+import PinnedMessagesCard from '../components/PinnedMessagesCard.vue'
+import { useGroupManager } from '../composables/useGroupManager'
+import { usePermission } from '../composables/usePermission'
+import { bizClient } from '../services/bizClient'
+import { authStore } from '../services/authStore'
+import type { PinnedMessage } from '../services/bizTypes'
 
 useMarkdown()
 
@@ -33,6 +46,7 @@ const showFilesPanel = ref(false)
 // Voice recording
 const recording = ref(false)
 let mediaRecorder: MediaRecorder | null = null
+
 let audioChunks: Blob[] = []
 
 const startRecording = async () => {
@@ -85,10 +99,116 @@ const p2p = ref(true)
 const to = ref(new Channel('', 0))
 const placeholder = ref('请输入对方登录名')
 
-const uid = router.currentRoute.value.query.uid as string || undefined
-const token = router.currentRoute.value.query.token as string || 'token111'
+const uid = authStore.uid
+const token = authStore.imToken
 
-title.value = `${uid || ''} (未连接)`
+// Sidebar tab
+const sidebarTab = ref<'conversations' | 'groups' | 'members'>('conversations')
+
+// Group management
+const showCreateGroup = ref(false)
+const showJoinGroup = ref(false)
+const showGroupInfo = ref(false)
+const showGroupSettings = ref(false)
+const groupManager = useGroupManager()
+const { getNickname, myGroups, fetchMyGroups } = groupManager
+const { isAdmin, canCreateGroup } = usePermission()
+
+// Invite members
+const showInviteModal = ref(false)
+const inviteTargetGroupId = ref('')
+
+// Direct chat
+const onDirectChat = (targetUid: string) => {
+  const channel = new Channel(targetUid, ChannelTypePerson)
+  onSelectChannel(channel)
+}
+
+const refreshMyGroups = () => {
+  if (authStore.isAuthenticated) fetchMyGroups()
+}
+
+const onSelectGroupFromList = (groupId: string) => {
+  const channel = new Channel(groupId, ChannelTypeGroup)
+  onSelectChannel(channel)
+}
+
+// Pinned messages
+const pinnedMessages = ref<PinnedMessage[]>([])
+const isPinnedSet = computed(() => {
+  const set = new Set<string>()
+  for (const p of pinnedMessages.value) set.add(p.client_msg_no)
+  return set
+})
+
+const fetchPinnedMessages = async () => {
+  if (!to.value.channelID || p2p.value) {
+    pinnedMessages.value = []
+    return
+  }
+  try {
+    pinnedMessages.value = await bizClient.getPinnedMessages(to.value.channelID)
+  } catch {
+    pinnedMessages.value = []
+  }
+}
+
+const getMessagePreview = (msg: Message): string => {
+  const content = msg.content
+  if (!content) return ''
+  if (content.contentType === MessageContentType.image) return '[图片]'
+  const text = (content as any).text || ''
+  if (text.startsWith('{file:')) return '[文件]'
+  if (text.startsWith('{voice:')) return '[语音]'
+  return text.substring(0, 100)
+}
+
+const handlePinMessage = async (msg: Message) => {
+  try {
+    await bizClient.pinMessage(to.value.channelID, {
+      message_id: msg.clientMsgNo,
+      message_seq: msg.messageSeq,
+      client_msg_no: msg.clientMsgNo,
+      content_preview: getMessagePreview(msg),
+      message_type: msg.content?.contentType || 0,
+      from_uid: msg.fromUID,
+    })
+    await fetchPinnedMessages()
+  } catch (err: any) {
+    alert(err?.response?.data?.error || '置顶失败')
+  }
+}
+
+const handleUnpinMessage = async (msg: Message | PinnedMessage) => {
+  const messageId = 'client_msg_no' in msg ? (msg as PinnedMessage).client_msg_no : (msg as Message).clientMsgNo
+  try {
+    await bizClient.unpinMessage(to.value.channelID, messageId)
+    await fetchPinnedMessages()
+  } catch (err: any) {
+    alert(err?.response?.data?.error || '取消置顶失败')
+  }
+}
+
+const handleLocatePinned = (clientMsgNo: string) => {
+  scrollToMessage(clientMsgNo)
+}
+
+const userDisplayName = computed(() => authStore.name || authStore.uid)
+
+const channelDisplayName = computed(() => {
+    if (!to.value.channelID) return ''
+    if (!p2p.value && groupManager.currentGroup.value?.name) {
+        return groupManager.currentGroup.value.name
+    }
+    // Try SDK channel info (populated by biz-backend via channelInfoCallback)
+    const ci = WKSDK.shared().channelManager.getChannelInfo(to.value)
+    if (ci?.title && ci.title !== to.value.channelID.charAt(0).toUpperCase()) {
+        return ci.title
+    }
+    return to.value.channelID
+})
+
+title.value = `${userDisplayName.value} (未连接)`
 
 const {
     messages, displayMessages, text, msgInputPlaceholder,
@@ -107,9 +227,9 @@ const {
     replyingTo, setReplyingTo, cancelReply,
     showCalendar, toggleCalendar, scrollToDate,
     expireSeconds,
-} = useChatMessages(to, uid || '', chatRef)
+} = useChatMessages(to, authStore.uid, chatRef)
 
-const { fileInput, uploading, uploadProgress, chooseFile: _chooseFile, onFileChange: _onFileChange, uploadAndSendFile } = useFileUpload(to, scrollBottom)
+const { fileInput, uploading, uploadProgress, chooseFile: _chooseFile, onFileChange: _onFileChange, uploadAndSendFile, cancelUpload } = useFileUpload(to, scrollBottom)
 
 const chooseFile = () => {
     if (!to.value || to.value.channelID.trim() === '') {
@@ -129,13 +249,20 @@ const onFileChange = (e: Event) => {
 let connectStatusListener!: ConnectStatusListener
 
 onMounted(() => {
-    if (APIClient.shared.config.apiURL === undefined) {
+    if (!authStore.isAuthenticated) {
         WKSDK.shared().connectManager.disconnect()
         router.push({ path: '/' })
         return
     }
+    if (authStore.status === 'departed') {
+        alert('账号已标记为离职状态，无法进入聊天')
+        WKSDK.shared().connectManager.disconnect()
+        authStore.logout()
+        router.push({ path: '/' })
+        return
+    }
     APIClient.shared.get('/route', {
-        param: { uid: router.currentRoute.value.query.uid },
+        param: { uid: authStore.uid },
     }).then((res: any) => {
         let addr = res.wss_addr
         if (!addr || addr === '') {
@@ -169,23 +296,24 @@ const connectIM = (addr: string) => {
         console.log(`[CONN] 连接状态变化: status=${status}(${statusNames[status] || '未知'}) reasonCode=${reasonCode ?? '-'} nodeId=${connectionInfo?.nodeId ?? '-'} time=${now}`)
         if (status === ConnectStatus.Connected) {
             if (connectionInfo) {
-                title.value = `${uid || ''} (已连接 · 节点${connectionInfo.nodeId})`
+                title.value = `${userDisplayName.value} (已连接 · 节点${connectionInfo.nodeId})`
                 console.log(`[CONN] ✓ 已连接到节点${connectionInfo.nodeId}`)
             } else {
-                title.value = `${uid || ''} (已连接)`
+                title.value = `${userDisplayName.value} (已连接)`
                 console.log(`[CONN] ✓ 已连接 (无connectionInfo)`)
             }
+            refreshMyGroups()
         } else if (status === ConnectStatus.Disconnect) {
-            title.value = `${uid || ''} (已断开)`
+            title.value = `${userDisplayName.value} (已断开)`
             console.warn(`[CONN] ✗ 连接断开 reasonCode=${reasonCode}`)
         } else if (status === ConnectStatus.ConnectFail) {
-            title.value = `${uid || ''} (连接失败)`
+            title.value = `${userDisplayName.value} (连接失败)`
             console.error(`[CONN] ✗ 连接失败 reasonCode=${reasonCode}`)
         } else if (status === ConnectStatus.ConnectKick) {
-            title.value = `${uid || ''} (被踢出)`
+            title.value = `${userDisplayName.value} (被踢出)`
             console.warn(`[CONN] ✗ 被踢出 reasonCode=${reasonCode}`)
         } else {
-            title.value = `${uid || ''} (${statusNames[status] || status})`
+            title.value = `${userDisplayName.value} (${statusNames[status] || status})`
         }
     }
     WKSDK.shared().connectManager.addConnectStatusListener(connectStatusListener)
@@ -219,7 +347,7 @@ const settingOKClick = () => {
         to.value = new Channel(channelID.value, ChannelTypeGroup)
     }
     if (!p2p.value) {
-        APIClient.shared.joinChannel(to.value.channelID, to.value.channelType, WKSDK.shared().config.uid || '')
+        APIClient.shared.joinChannel(to.value.channelID, to.value.channelType, WKSDK.shared().config.authStore.uid)
     }
     const conversation = WKSDK.shared().conversationManager.findConversation(to.value)
     if (!conversation) {
@@ -237,11 +365,18 @@ const onSelectChannel = (channel: Channel) => {
     showSettingPanel.value = false
     clearMessages()
     pullLast()
-    addSystemEvent(`你加入了与 ${channel.channelID} 的会话`)
+    if (channel.channelType === ChannelTypeGroup) {
+        groupManager.fetchGroupInfo(channel.channelID)
+        fetchPinnedMessages()
+        addSystemEvent(`你进入了群聊`)
+    } else {
+        addSystemEvent(`你加入了与 ${channel.channelID} 的会话`)
+    }
 }
 
 const logout = () => {
     WKSDK.shared().connectManager.disconnect()
+    authStore.logout()
     router.push({ path: '/' })
 }
 
@@ -258,7 +393,9 @@ const onPaste = async (e: ClipboardEvent) => {
                 await uploadAndSendFile(file)
                 scrollBottom()
             } catch (err: any) {
-                alert('图片上传失败: ' + (err.message || '未知错误'))
+                if (err.message !== '上传取消') {
+                    alert('图片上传失败: ' + (err.message || '未知错误'))
+                }
             }
             break
         }
@@ -332,6 +469,36 @@ const toggleFilesPanel = () => {
     }
 }
 
+const scrollToMessage = (clientMsgNo: string) => {
+    nextTick(() => {
+        const el = document.getElementById(clientMsgNo)
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            el.classList.add('date-jump-highlight')
+            setTimeout(() => el.classList.remove('date-jump-highlight'), 2000)
+        }
+    })
+}
+
+const locateAndClearSearch = (clientMsgNo: string) => {
+    searchQuery.value = ''
+    nextTick(() => {
+        const el = document.getElementById(clientMsgNo)
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            el.classList.add('date-jump-highlight')
+            setTimeout(() => el.classList.remove('date-jump-highlight'), 2000)
+        }
+    })
+}
+
+const formatMsgTimeFull = (ts: number): string => {
+    if (!ts) return ''
+    const d = new Date(ts * 1000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 // @ mention
 const showMentionMenu = ref(false)
 const insertMention = (label: string) => {
@@ -345,7 +512,7 @@ let unreadTimer: ReturnType<typeof setInterval> | null = null
 const updateUnreadCount = () => {
     const count = WKSDK.shared().conversationManager.getAllUnreadCount()
     totalUnread.value = count
-    document.title = count > 0 ? `(${count > 99 ? '99+' : count}) 疾风即时` : '疾风即时'
+    document.title = count > 0 ? `(${count > 99 ? '99+' : count}) 极速通` : '极速通'
 }
 onMounted(() => {
     unreadTimer = setInterval(updateUnreadCount, 3000)
@@ -367,7 +534,7 @@ onUnmounted(() => {
                     </svg>
                     <span class="unread-badge" v-if="totalUnread > 0">{{ totalUnread > 99 ? '99+' : totalUnread }}</span>
                 </button>
-                <span class="brand">疾风即时</span>
+                <span class="brand">极速通</span>
             </div>
             <div class="header-center">
                 <div class="connection-badge" :class="{ connected: title.includes('已连接') }">
@@ -386,6 +553,11 @@ onUnmounted(() => {
                         <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
                     </svg>
                 </button>
+                <button class="icon-btn" :class="{ active: showGroupInfo }" @click="showGroupInfo = !showGroupInfo" title="群信息" v-if="to.channelID && !p2p">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>
+                    </svg>
+                </button>
                 <button class="icon-btn" :class="{ active: searchVisible }" @click="toggleSearch" title="搜索" v-if="to.channelID">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                         <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
@@ -396,11 +568,21 @@ onUnmounted(() => {
                         <path d="M12 5v14M5 12h14" />
                     </svg>
                     <span class="chat-target">
-                        {{ to.channelID ? `${p2p ? '单聊' : '群聊'} · ${to.channelID}` : '新建会话' }}
+                        {{ to.channelID ? `${p2p ? '单聊' : '群聊'} · ${channelDisplayName}` : '新建会话' }}
                         <template v-if="to.channelID && !p2p && members.size > 0">
                             · {{ onlineCount }}在线 · {{ members.size }}人
                         </template>
                     </span>
+                </button>
+                <button class="icon-btn" @click="router.push('/profile')" title="个人信息">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                    </svg>
+                </button>
+                <button class="icon-btn admin-btn" v-if="isAdmin" @click="router.push('/admin')" title="管理后台">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+                    </svg>
                 </button>
                 <button class="icon-btn logout-btn" @click="logout" title="退出">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -416,9 +598,45 @@ onUnmounted(() => {
             <transition name="slide">
                 <aside class="sidebar" v-if="sidebarVisible">
                     <div class="sidebar-header">
-                        <h3>会话列表</h3>
+                        <div class="sidebar-tabs">
+                            <button
+                                class="sidebar-tab"
+                                :class="{ active: sidebarTab === 'conversations' }"
+                                @click="sidebarTab = 'conversations'"
+                            >会话</button>
+                            <button
+                                class="sidebar-tab"
+                                :class="{ active: sidebarTab === 'groups' }"
+                                @click="sidebarTab = 'groups'; refreshMyGroups()"
+                            >群聊</button>
+                            <button
+                                class="sidebar-tab"
+                                :class="{ active: sidebarTab === 'members' }"
+                                @click="sidebarTab = 'members'"
+                            >成员</button>
+                        </div>
+                        <button class="admin-entry-btn" v-if="isAdmin" @click="router.push('/admin')">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+                            </svg>
+                            <span>管理后台</span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" class="admin-arrow">
+                                <path d="M9 18l6-6-6-6"/>
+                            </svg>
+                        </button>
                     </div>
-                    <Conversation :onSelectChannel="onSelectChannel" />
+                    <Conversation :onSelectChannel="onSelectChannel" v-if="sidebarTab === 'conversations'" />
+                    <MyGroupsList
+                        v-else-if="sidebarTab === 'groups'"
+                        :groups="myGroups"
+                        :uid="authStore.uid"
+                        :loading="groupManager.loading.value"
+                        @selectGroup="onSelectGroupFromList"
+                        @refresh="refreshMyGroups"
+                        @createGroup="showCreateGroup = true"
+                        @joinGroup="showJoinGroup = true"
+                    />
+                    <EnterpriseMembers v-else-if="sidebarTab === 'members'" @direct-chat="onDirectChat" />
                 </aside>
             </transition>
 
@@ -432,22 +650,40 @@ onUnmounted(() => {
                             <path d="M28 35h24M28 45h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
                         </svg>
                     </div>
-                    <h2>疾风即时</h2>
+                    <h2>极速通</h2>
                     <p>选择一个会话或创建新会话开始聊天</p>
                 </div>
 
                 <!-- Search bar -->
                 <div class="search-bar" v-if="to.channelID && searchVisible">
-                    <input
-                        v-model="searchQuery"
-                        placeholder="搜索聊天记录..."
-                        class="search-input"
-                        autofocus
-                    />
+                    <div class="search-input-wrap">
+                        <input
+                            v-model="searchQuery"
+                            placeholder="搜索聊天记录..."
+                            class="search-input"
+                            autofocus
+                        />
+                        <button class="search-clear-btn" v-if="searchQuery" @click="searchQuery = ''" title="清除搜索">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
                     <span class="search-count" v-if="searchQuery">
                         {{ searchMatchCount }} 条结果
                     </span>
                 </div>
+
+                <!-- Pinned messages card (group only) -->
+                <PinnedMessagesCard
+                    v-if="to.channelID && !p2p"
+                    :pinnedMessages="pinnedMessages"
+                    :getNickname="getNickname"
+                    :currentUid="authStore.uid"
+                    :isOwner="groupManager.isOwner.value"
+                    @locate="handleLocatePinned"
+                    @unpin="handleUnpinMessage"
+                />
 
                 <!-- Messages -->
                 <div class="message-list" v-on:scroll="handleScroll" ref="chatRef" v-if="to.channelID">
@@ -461,22 +697,30 @@ onUnmounted(() => {
                             'msg-sent': m.send,
                             'msg-first': isFirstInGroup(i),
                             'msg-last': isLastInGroup(i),
+                            'search-match': m.__searchMatch,
                         }" :id="m.clientMsgNo">
-                            <div class="msg-avatar" v-if="!m.send">
-                                <img :src="avatarUrl(m.fromUID)" />
+                            <div class="msg-avatar msg-avatar-recv" v-if="!m.send">
+                                <span>{{ getNickname(m.fromUID).charAt(0) || m.fromUID.charAt(0) }}</span>
                             </div>
                             <div class="msg-body" :class="{ 'msg-body-sent': m.send }">
-                                <div class="msg-sender" v-if="!m.send">{{ m.fromUID }}</div>
+                                <div class="msg-sender" v-if="!m.send">{{ getNickname(m.fromUID) }}</div>
                                 <div class="msg-bubble" :class="{ 'bubble-sent': m.send, 'bubble-recv': !m.send }">
                                     <div class="msg-status" v-if="m.send && m.status === MsgStatusWait">
                                         <span class="sending-dots"><i>.</i><i>.</i><i>.</i></span>
                                     </div>
-                                    <MessageUI :message="m" :searchQuery="searchQuery" @reply="setReplyingTo" />
+                                    <MessageUI :message="m" :searchQuery="searchQuery" :isGroup="!p2p" :isPinned="isPinnedSet.has(m.clientMsgNo)" @reply="setReplyingTo" @pin="handlePinMessage" @unpin="(msg: Message) => handleUnpinMessage(msg)" />
                                 </div>
                                 <div class="msg-time msg-fail" v-if="m.send && m.status === MsgStatusFail">{{ m.failReason || '发送失败' }}</div>
                             </div>
-                            <div class="msg-avatar" v-if="m.send">
-                                <img :src="avatarUrl(m.fromUID)" />
+                            <div class="search-locate-bar" v-if="m.__searchMatch && searchQuery" @click="locateAndClearSearch(m.clientMsgNo)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                    <circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>
+                                </svg>
+                                <span>定位到聊天位置</span>
+                                <span class="search-locate-time">{{ formatMsgTimeFull(m.timestamp) }}</span>
+                            </div>
+                            <div class="msg-avatar msg-avatar-sent" v-if="m.send">
+                                <span>{{ getNickname(m.fromUID).charAt(0) || m.fromUID.charAt(0) }}</span>
                             </div>
                         </div>
                     </template>
@@ -487,6 +731,11 @@ onUnmounted(() => {
                     <div class="upload-bar" v-if="uploading">
                         <span class="upload-text">上传中 {{ uploadProgress }}%</span>
                         <div class="upload-progress-track"><div class="upload-progress-fill" :style="{ width: uploadProgress + '%' }"></div></div>
+                        <button class="upload-cancel-btn" @click="cancelUpload" title="取消上传">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
                     </div>
                     <div class="reply-bar" v-if="replyingTo">
                         <div class="reply-bar-content">
@@ -523,9 +772,9 @@ onUnmounted(() => {
                                     <span>所有人</span>
                                 </button>
                                 <div class="mention-divider" v-if="members.size > 0"></div>
-                                <button class="mention-item" v-for="uid in Array.from(members)" :key="uid" @click="insertMention('@'+uid+' ')">
+                                <button class="mention-item" v-for="mUid in Array.from(members)" :key="mUid" @click="insertMention('@'+mUid+' ')">
                                     <span class="mention-icon">@</span>
-                                    <span>{{ uid }}</span>
+                                    <span>{{ getNickname(mUid) }}</span>
                                 </button>
                             </div>
                         </div>
@@ -559,12 +808,15 @@ onUnmounted(() => {
                 :messages="messages"
                 :channelName="to.channelID"
                 :channelType="to.channelType"
+                :uid="authStore.uid"
+                :groupName="channelDisplayName"
                 @close="showFilesPanel = false"
+                @locate="scrollToMessage"
             />
 
         </div>
 
-        <!-- Setting modal -->
+        <!-- Setting modal: new session -->
         <transition name="modal">
             <div class="modal-overlay" v-if="showSettingPanel" @click="settingClick">
                 <div class="modal-card" @click.stop="">
@@ -573,11 +825,62 @@ onUnmounted(() => {
                         <button class="switch-btn" :class="{ active: p2p }" @click="p2p = true">单聊</button>
                         <button class="switch-btn" :class="{ active: !p2p }" @click="p2p = false">群聊</button>
                     </div>
-                    <input :placeholder="placeholder" class="modal-input" v-model="channelID" />
-                    <button class="modal-ok" @click="settingOKClick">开始聊天</button>
+                    <input :placeholder="placeholder" class="modal-input" v-model="channelID" v-if="p2p" />
+                    <div class="group-actions" v-if="!p2p">
+                        <button class="modal-ok" v-if="canCreateGroup" @click="showSettingPanel = false; showCreateGroup = true">创建群聊</button>
+                        <button class="modal-secondary" @click="showSettingPanel = false; showJoinGroup = true">加入群聊</button>
+                        <p class="hint-text" v-if="!canCreateGroup">普通员工无法创建群聊，请联系项目负责人</p>
+                    </div>
+                    <button class="modal-ok" v-if="p2p" @click="settingOKClick">开始聊天</button>
                 </div>
             </div>
         </transition>
+
+        <!-- Create group modal -->
+        <CreateGroupModal v-if="showCreateGroup" @close="showCreateGroup = false" @created="(groupId: string) => {
+            showCreateGroup = false;
+            to = new Channel(groupId, ChannelTypeGroup);
+            channelID = groupId;
+            p2p = false;
+            showSettingPanel = false;
+            APIClient.shared.joinChannel(groupId, ChannelTypeGroup, WKSDK.shared().config.authStore.uid);
+            const conv = WKSDK.shared().conversationManager.findConversation(to);
+            if (!conv) WKSDK.shared().conversationManager.createEmptyConversation(to);
+            clearMessages();
+            pullLast();
+            addSystemEvent('群聊已创建，你邀请大家加入吧');
+        }" />
+
+        <!-- Join group modal -->
+        <JoinGroupModal v-if="showJoinGroup" @close="showJoinGroup = false" @joined="(groupId: string) => {
+            showJoinGroup = false;
+            to = new Channel(groupId, ChannelTypeGroup);
+            channelID = groupId;
+            p2p = false;
+            showSettingPanel = false;
+            const conv = WKSDK.shared().conversationManager.findConversation(to);
+            if (!conv) WKSDK.shared().conversationManager.createEmptyConversation(to);
+            clearMessages();
+            pullLast();
+            addSystemEvent('你加入了群聊');
+        }" />
+
+        <!-- Group info panel -->
+        <GroupInfoPanel v-if="to.channelID && !p2p && showGroupInfo" :groupId="to.channelID" :key="to.channelID"
+            @close="showGroupInfo = false"
+            @openSettings="showGroupSettings = true"
+            @invite="inviteTargetGroupId = to.channelID; showInviteModal = true" />
+
+        <!-- Invite members modal -->
+        <InviteMembersModal v-if="showInviteModal" :groupId="inviteTargetGroupId"
+            @close="showInviteModal = false; inviteTargetGroupId = ''"
+            @invited="showInviteModal = false; inviteTargetGroupId = ''" />
+
+        <!-- Group settings modal -->
+        <GroupSettingsModal v-if="showGroupSettings" :groupId="to.channelID"
+            @close="showGroupSettings = false"
+            @disbanded="showGroupSettings = false; showGroupInfo = false; to = new Channel('', 0); channelID = ''; clearMessages()"
+            @memberKicked="() => {}" />
 
         <!-- Calendar panel -->
         <CalendarPanel
@@ -624,10 +927,7 @@ onUnmounted(() => {
 .brand {
     font-size: 17px;
     font-weight: 700;
-    background: linear-gradient(135deg, var(--primary), var(--accent));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--primary);
 }
 
 .header-center {
@@ -699,6 +999,17 @@ onUnmounted(() => {
     height: 20px;
 }
 
+.admin-btn {
+    color: #2563eb;
+}
+
+.hint-text {
+    font-size: 12px;
+    color: #9ca3af;
+    text-align: center;
+    margin-top: 8px;
+}
+
 .chat-btn {
     display: flex;
     align-items: center;
@@ -739,14 +1050,69 @@ onUnmounted(() => {
 }
 
 .sidebar-header {
-    padding: 20px 20px 12px;
+    padding: 16px 16px 8px;
     flex-shrink: 0;
 }
 
-.sidebar-header h3 {
-    font-size: 15px;
+.sidebar-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    padding: 3px;
+}
+
+.sidebar-tab {
+    flex: 1;
+    height: 34px;
+    border-radius: calc(var(--radius) - 2px);
+    font-size: 13px;
+    font-weight: 500;
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.sidebar-tab.active {
+    background: var(--bg-card);
+    color: var(--primary);
     font-weight: 600;
+    box-shadow: var(--shadow-sm);
+}
+
+.sidebar-tab:hover:not(.active) {
     color: var(--text);
+}
+
+.admin-entry-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 44px;
+    margin-top: 10px;
+    padding: 0 14px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #1e3a5f, #2563eb);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all var(--transition);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+.admin-entry-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+}
+
+.admin-entry-btn .admin-arrow {
+    margin-left: auto;
+    opacity: 0.7;
 }
 
 /* ===== Chat main ===== */
@@ -783,10 +1149,7 @@ onUnmounted(() => {
 .empty-state h2 {
     font-size: 24px;
     font-weight: 700;
-    background: linear-gradient(135deg, var(--primary), var(--accent));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--primary);
 }
 
 .empty-state p {
@@ -822,10 +1185,17 @@ onUnmounted(() => {
     flex-shrink: 0;
 }
 
-.search-input {
+.search-input-wrap {
     flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-input {
+    width: 100%;
     height: 38px;
-    padding: 0 14px;
+    padding: 0 34px 0 14px;
     border-radius: var(--radius);
     background: var(--bg);
     border: 1px solid var(--border);
@@ -845,6 +1215,73 @@ onUnmounted(() => {
     color: var(--text-muted);
     white-space: nowrap;
     flex-shrink: 0;
+}
+
+.search-clear-btn {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,0.15);
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.search-clear-btn:hover {
+    background: rgba(0,0,0,0.25);
+    color: var(--text);
+}
+
+/* Search match locate bar */
+.search-locate-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(79, 110, 247, 0.1);
+    color: var(--primary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+    align-self: center;
+}
+
+.msg-row.search-match:hover .search-locate-bar {
+    opacity: 1;
+}
+
+.search-locate-bar:hover {
+    background: var(--primary);
+    color: #fff;
+}
+
+.search-locate-time {
+    color: var(--text-muted);
+    margin-left: 4px;
+    font-weight: 400;
+}
+
+.search-locate-bar:hover .search-locate-time {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.msg-row.search-match .msg-bubble {
+    box-shadow: 0 0 0 2px rgba(79, 110, 247, 0.3);
 }
 
 
@@ -911,8 +1348,24 @@ onUnmounted(() => {
     height: 34px;
     border-radius: 50%;
     overflow: hidden;
-    background: var(--bg-elevated);
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.msg-avatar span {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.msg-avatar-recv {
+    background: #64748b;
+}
+
+.msg-avatar-sent {
+    background: var(--primary);
 }
 
 .msg-avatar img {
@@ -1253,6 +1706,26 @@ onUnmounted(() => {
     transition: width 0.3s ease;
 }
 
+.upload-cancel-btn {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.upload-cancel-btn:hover {
+    background: #ef4444;
+    color: #fff;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -1350,6 +1823,31 @@ onUnmounted(() => {
 .modal-ok:hover {
     transform: translateY(-1px);
     box-shadow: 0 6px 20px rgba(79, 110, 247, 0.4);
+}
+
+.modal-secondary {
+    width: 100%;
+    height: 48px;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 15px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.modal-secondary:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.group-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
 }
 
 /* ===== Transitions ===== */

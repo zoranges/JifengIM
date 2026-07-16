@@ -28,12 +28,13 @@ const makeImageContent = (file: File, fileUrl: string): Promise<MessageContent> 
     })
 }
 
-const uploadFile = (file: File, onProgress?: (pct: number) => void): Promise<string> => {
+const uploadFile = (file: File, onProgress?: (pct: number) => void, onXHR?: (xhr: XMLHttpRequest) => void): Promise<string> => {
     return new Promise((resolve, reject) => {
         const formData = new FormData()
         formData.append('file', file)
         const apiURL = APIClient.shared.config.apiURL
         const xhr = new XMLHttpRequest()
+        if (onXHR) onXHR(xhr)
         xhr.upload.addEventListener('progress', (ev) => {
             if (ev.lengthComputable && onProgress) onProgress(Math.round((ev.loaded / ev.total) * 100))
         })
@@ -56,12 +57,22 @@ export function useFileUpload(to: Ref<Channel>, onSent?: () => void) {
     const fileInput = ref<HTMLInputElement | null>(null)
     const uploading = ref(false)
     const uploadProgress = ref(0)
+    let currentXHR: XMLHttpRequest | null = null
+
+    const cancelUpload = () => {
+        if (currentXHR) {
+            currentXHR.abort()
+            currentXHR = null
+        }
+        uploading.value = false
+        uploadProgress.value = 0
+    }
 
     const uploadAndSendFile = async (file: File) => {
         uploading.value = true
         uploadProgress.value = 0
         try {
-            const fileUrl = await uploadFile(file, (pct) => { uploadProgress.value = pct })
+            const fileUrl = await uploadFile(file, (pct) => { uploadProgress.value = pct }, (xhr) => { currentXHR = xhr })
             if (!fileUrl) throw new Error('上传返回缺少URL')
 
             const isImage = file.type.startsWith('image/')
@@ -77,6 +88,7 @@ export function useFileUpload(to: Ref<Channel>, onSent?: () => void) {
         } finally {
             uploading.value = false
             uploadProgress.value = 0
+            currentXHR = null
         }
     }
 
@@ -91,11 +103,13 @@ export function useFileUpload(to: Ref<Channel>, onSent?: () => void) {
         try {
             await uploadAndSendFile(file)
         } catch (err: any) {
-            alert('文件上传失败: ' + (err.message || '未知错误'))
+            if (err.message !== '上传取消') {
+                alert('文件上传失败: ' + (err.message || '未知错误'))
+            }
         } finally {
             if (input) input.value = ''
         }
     }
 
-    return { fileInput, uploading, uploadProgress, chooseFile, onFileChange, uploadAndSendFile }
+    return { fileInput, uploading, uploadProgress, chooseFile, onFileChange, uploadAndSendFile, cancelUpload }
 }

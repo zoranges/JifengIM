@@ -109,6 +109,19 @@ services:
       timeout: 3s
       retries: 6
 
+  biz-backend:
+    build:
+      context: ./demo/biz-backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - wk-node1
+    environment:
+      WK_API_URL: http://wk-node1:5001
+      DB_PATH: /data/biz.db
+    volumes:
+      - ./docker/biz-data:/data
+
   wk-web:
     build:
       context: .

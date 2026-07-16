@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { Message } from 'wukongimjssdk'
 import { formatFileSize, highlightText } from '../services/utils'
 
@@ -7,6 +7,8 @@ const props = defineProps<{
     message: Message
     searchQuery?: string
 }>()
+
+const showPreview = ref(false)
 
 const displayName = computed(() => {
     if (props.searchQuery && fileName.value) {
@@ -97,11 +99,18 @@ const typeLabel = computed(() => {
 })
 
 
+const isPDF = computed(() => fileMime.value === 'application/pdf' || fileName.value.toLowerCase().endsWith('.pdf'))
+
 const preview = () => {
-    if (fileUrl.value) {
+    if (!fileUrl.value) return
+    if (isPDF.value) {
+        showPreview.value = true
+    } else {
         window.open(fileUrl.value, '_blank')
     }
 }
+
+const closePreview = () => { showPreview.value = false }
 
 const download = () => {
     if (fileUrl.value && fileName.value) {
@@ -139,6 +148,30 @@ const download = () => {
             </button>
         </div>
     </div>
+
+    <!-- PDF Preview overlay -->
+    <transition name="fade">
+        <div class="pdf-preview-overlay" v-if="showPreview" @click="closePreview">
+            <div class="pdf-preview-container" @click.stop>
+                <div class="pdf-preview-header">
+                    <span class="pdf-preview-title">{{ fileName }}</span>
+                    <div class="pdf-preview-actions">
+                        <a :href="fileUrl" target="_blank" class="pdf-new-tab-btn" title="新窗口打开">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/>
+                            </svg>
+                        </a>
+                        <button class="pdf-preview-close" @click="closePreview">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <iframe :src="fileUrl" class="pdf-iframe" frameborder="0"></iframe>
+            </div>
+        </div>
+    </transition>
 </template>
 
 <style scoped>
@@ -229,5 +262,111 @@ const download = () => {
 .download-btn:hover {
     transform: scale(1.1);
     box-shadow: 0 2px 10px rgba(0,212,170,0.4);
+}
+
+/* PDF Preview overlay */
+.pdf-preview-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 24px;
+}
+
+.pdf-preview-container {
+    width: 100%;
+    max-width: 960px;
+    height: 90vh;
+    background: var(--bg-card);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.pdf-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.pdf-preview-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 12px;
+}
+
+.pdf-preview-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pdf-new-tab-btn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.15s;
+}
+
+.pdf-new-tab-btn:hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+}
+
+.pdf-preview-close {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.pdf-preview-close:hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+}
+
+.pdf-iframe {
+    flex: 1;
+    width: 100%;
+    border: none;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+    transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+    opacity: 0;
 }
 </style>

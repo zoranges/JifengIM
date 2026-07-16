@@ -14,10 +14,14 @@ import { addRevokedMessage } from '../services/revokeStore';
 const props = defineProps<{
     message: Message
     searchQuery?: string
+    isGroup?: boolean
+    isPinned?: boolean
 }>()
 
 const emit = defineEmits<{
     (e: 'reply', msg: Message): void
+    (e: 'pin', msg: Message): void
+    (e: 'unpin', msg: Message): void
 }>()
 
 const contentType = props.message.content?.contentType
@@ -122,6 +126,16 @@ const handleRevoke = async () => {
     } catch { /* ignore */ }
 }
 
+const handlePin = () => {
+    showContextMenu.value = false
+    emit('pin', props.message)
+}
+
+const handleUnpin = () => {
+    showContextMenu.value = false
+    emit('unpin', props.message)
+}
+
 // Close menu on click outside
 if (typeof window !== 'undefined') {
     window.addEventListener('click', closeContextMenu)
@@ -147,9 +161,15 @@ if (typeof window !== 'undefined') {
             <Text :message="$props.message" :searchQuery="searchQuery" v-else-if="contentType === MessageContentType.text"></Text>
             <ImageMsg :message="$props.message" v-else-if="contentType === MessageContentType.image"></ImageMsg>
             <CustomMessage :message="$props.message" v-else-if="contentType === orderMessage" ></CustomMessage>
-            <div class="msg-meta" v-if="isEdited || readReceipt || mentionInfo">
+            <div class="msg-meta" v-if="isEdited || readReceipt || mentionInfo || isPinned">
                 <span class="msg-mention" v-if="mentionInfo" :class="{ 'mention-me': mentionInfo.isMe }">{{ mentionInfo.label }}</span>
                 <span class="msg-edited" v-if="isEdited">已编辑</span>
+                <span class="msg-pinned" v-if="isPinned" title="已置顶">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="10" height="10">
+                        <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+                    </svg>
+                    已置顶
+                </span>
                 <span class="msg-read-receipt" v-if="readReceipt">{{ readReceipt }}</span>
             </div>
         </template>
@@ -162,6 +182,18 @@ if (typeof window !== 'undefined') {
                     <path d="M20 18v-2a4 4 0 00-4-4H4"/>
                 </svg>
                 <span>回复</span>
+            </button>
+            <button class="context-menu-item" v-if="isGroup && !isPinned" @click="handlePin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+                </svg>
+                <span>置顶</span>
+            </button>
+            <button class="context-menu-item" v-if="isGroup && isPinned" @click="handleUnpin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+                </svg>
+                <span>取消置顶</span>
             </button>
             <button class="context-menu-item" v-if="canRevoke" @click="handleRevoke">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -226,6 +258,15 @@ if (typeof window !== 'undefined') {
 .msg-edited {
     color: var(--text-muted);
     opacity: 0.6;
+}
+
+.msg-pinned {
+    color: var(--primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    opacity: 0.8;
 }
 
 .msg-read-receipt {

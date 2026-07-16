@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue';
-import { CMDContent, Channel, ChannelInfo, ChannelTypePerson, ConnectStatus, ConnectStatusListener, Conversation, ConversationAction, Message, WKSDK } from 'wukongimjssdk';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { CMDContent, Channel, ChannelInfo, ChannelTypePerson, ChannelTypeGroup, ConnectStatus, ConnectStatusListener, Conversation, ConversationAction, Message, WKSDK } from 'wukongimjssdk';
 import { ConversationWrap } from './ConversationWrap';
 import APIClient, { CMDType } from '../../services/APIClient';
-import { avatarUrl } from '../../services/utils';
 import { addRevokedMessage } from '../../services/revokeStore';
 
 const conversationWraps = ref<ConversationWrap[]>()
 const selectedChannel = ref<Channel>()
+
+// Filter to show only person-to-person conversations (groups go in the 群聊 tab)
+const personConversations = computed(() => {
+    return (conversationWraps.value || []).filter(c => c.channel.channelType === ChannelTypePerson)
+})
 
 const onSelectChannel = defineProps<{ onSelectChannel: (channel: Channel) => void }>()
 
@@ -150,7 +154,12 @@ const getConversationItemCss = (conversationWrap: ConversationWrap) => {
 
 const fetchChannelInfoIfNeed = (channel: Channel) => {
     const channelInfo = WKSDK.shared().channelManager.getChannelInfo(channel)
+    // Always fetch for group channels if we don't have biz-backend data yet.
+    // The SDK's conversation sync may have cached IM-server channel info without
+    // the group name from biz-backend.
     if (!channelInfo) {
+        WKSDK.shared().channelManager.fetchChannelInfo(channel)
+    } else if (channel.channelType === ChannelTypeGroup && !channelInfo.orgData?.groupName) {
         WKSDK.shared().channelManager.fetchChannelInfo(channel)
     }
 }
@@ -168,14 +177,14 @@ const deleteConversation = async (e: Event, conversationWrap: ConversationWrap) 
 
 <template>
     <div class="conversations">
-        <div :class="getConversationItemCss(conversationWrap)" v-for="conversationWrap in conversationWraps" :onClick="() => {
+        <div :class="getConversationItemCss(conversationWrap)" v-for="conversationWrap in personConversations" :onClick="() => {
             onSelectChannelClick(conversationWrap.channel)
         }">
             {{ fetchChannelInfoIfNeed(conversationWrap.channel) }}
             <div class="item-content">
                 <div class="left">
-                    <div class="avatar" v-if="conversationWrap.channel.channelType === ChannelTypePerson">
-                        <img :src="conversationWrap.channelInfo?.logo || avatarUrl(conversationWrap.channel.channelID)" />
+                    <div class="avatar person-avatar" v-if="conversationWrap.channel.channelType === ChannelTypePerson">
+                        <span>{{ (conversationWrap.channelInfo?.title || conversationWrap.channel.channelID).charAt(0) }}</span>
                     </div>
                     <div class="avatar group-avatar" v-else>
                         <span>{{ (conversationWrap.channelInfo?.title || conversationWrap.channel.channelID).charAt(0) }}</span>
@@ -251,6 +260,19 @@ const deleteConversation = async (e: Event, conversationWrap: ConversationWrap) 
     width: 100%;
     height: 100%;
     object-fit: cover;
+}
+
+.person-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #64748b, #475569);
+}
+
+.person-avatar span {
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
 }
 
 .group-avatar {

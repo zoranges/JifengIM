@@ -1,21 +1,25 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { Message } from 'wukongimjssdk'
-import { useGroupFiles } from '../composables/useGroupFiles'
+import { useGroupFiles, type FileItem } from '../composables/useGroupFiles'
 import {
     getCategories, getFileCategoryId, getCategoryCounts,
     createCategory, renameCategory, deleteCategory,
     moveFile, batchMoveFiles,
 } from '../services/fileOrgStore'
+import { getMyDocs, saveToMyDocs, removeFromMyDocs, isInMyDocs, type SavedFile } from '../services/personalFileStore'
 
 const props = defineProps<{
     messages: Message[]
     channelName: string
     channelType: number
+    uid: string
+    groupName?: string
 }>()
 
 const emit = defineEmits<{
     (e: 'close'): void
+    (e: 'locate', clientMsgNo: string): void
 }>()
 
 const { allFiles, imageFiles, videoFiles, audioFiles, docFiles } = useGroupFiles(props.messages)
@@ -39,6 +43,38 @@ const refreshStore = () => {
 }
 
 refreshStore()
+
+// ---- My Docs ----
+const myDocsFiles = ref<SavedFile[]>(getMyDocs(props.uid))
+const myDocsMsgNos = computed(() => new Set(myDocsFiles.value.map(f => f.clientMsgNo)))
+
+const refreshMyDocs = () => {
+    myDocsFiles.value = getMyDocs(props.uid)
+}
+
+const handleSaveToMyDocs = (f: FileItem) => {
+    saveToMyDocs(props.uid, {
+        clientMsgNo: f.clientMsgNo,
+        name: f.name,
+        size: f.size,
+        sizeText: f.sizeText,
+        url: f.url,
+        mime: f.mime,
+        isImage: f.isImage,
+        fileType: f.fileType,
+        width: f.width,
+        height: f.height,
+        sender: f.sender,
+        timestamp: f.timestamp,
+        savedAt: Date.now(),
+    })
+    refreshMyDocs()
+}
+
+const handleRemoveFromMyDocs = (clientMsgNo: string) => {
+    removeFromMyDocs(props.uid, clientMsgNo)
+    refreshMyDocs()
+}
 
 // ---- Category management ----
 const newCatName = ref('')
@@ -79,6 +115,9 @@ const handleDeleteCategory = (id: string) => {
 
 // ---- Computed file lists ----
 const filesInCategory = computed(() => {
+    if (selectedCategoryId.value === '__mydocs') {
+        return myDocsFiles.value as FileItem[]
+    }
     if (selectedCategoryId.value === '__images') return imageFiles.value
     if (selectedCategoryId.value === '__videos') return videoFiles.value
     if (selectedCategoryId.value === '__audios') return audioFiles.value
@@ -90,14 +129,26 @@ const filesInCategory = computed(() => {
     return allFiles.value.filter(f => fileCategoryId.value[f.clientMsgNo] === catId)
 })
 
-const activeTabCount = computed(() => {
-    if (selectedCategoryId.value === '__images') return imageFiles.value.length
-    if (selectedCategoryId.value === '__videos') return videoFiles.value.length
-    if (selectedCategoryId.value === '__audios') return audioFiles.value.length
-    if (selectedCategoryId.value === '__docs') return docFiles.value.length
-    if (selectedCategoryId.value === null) return allFiles.value.filter(f => !fileCategoryId.value[f.clientMsgNo]).length
-    return categoryCounts.value[selectedCategoryId.value] || 0
+const isMyDocs = computed(() => selectedCategoryId.value === '__mydocs')
+
+// ---- Search ----
+const searchQuery = ref('')
+const displayedFiles = computed(() => {
+    const q = searchQuery.value.trim().toLowerCase()
+    if (!q) return filesInCategory.value
+    return filesInCategory.value.filter(f =>
+        f.name.toLowerCase().includes(q) ||
+        f.sender.toLowerCase().includes(q)
+    )
 })
+
+const activeTabCount = computed(() => displayedFiles.value.length)
+
+const selectCategory = (id: string | null) => {
+    selectedCategoryId.value = id
+    selectMode.value = false
+    searchQuery.value = ''
+}
 
 // ---- Multi-select ----
 const selectMode = ref(false)
@@ -117,7 +168,7 @@ const toggleFileSelect = (clientMsgNo: string) => {
 }
 
 const selectAll = () => {
-    selectedFiles.value = new Set(filesInCategory.value.map(f => f.clientMsgNo))
+    selectedFiles.value = new Set(displayedFiles.value.map(f => f.clientMsgNo))
 }
 
 const batchMoveTo = (categoryId: string | null) => {
@@ -184,19 +235,61 @@ const categoryNameFor = (clientMsgNo: string): string => {
     return cat?.name || ''
 }
 
-const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) + '...' : s
+const formatDate = (ts: number): string => {
+    if (!ts) return ''
+    const d = new Date(ts * 1000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
-// Close move menu when clicking outside
+// ---- Context menu ----
+const ctxMenu = ref<{ x: number; y: number; clientMsgNo: string } | null>(null)
+
+const onContextMenu = (e: MouseEvent, clientMsgNo: string) => {
+    e.preventDefault()
+    ctxMenu.value = { x: e.clientX, y: e.clientY, clientMsgNo }
+}
+
+const closeCtxMenu = () => { ctxMenu.value = null }
+
+const ctxMenuFile = computed(() => {
+    if (!ctxMenu.value) return null
+    return filesInCategory.value.find(f => f.clientMsgNo === ctxMenu.value!.clientMsgNo) || null
+})
+
+const handleLocate = () => {
+    if (ctxMenu.value) {
+        emit('locate', ctxMenu.value.clientMsgNo)
+    }
+    closeCtxMenu()
+}
+
+const handleSaveDoc = () => {
+    const f = ctxMenuFile.value
+    if (f) handleSaveToMyDocs(f)
+    closeCtxMenu()
+}
+
+const handleRemoveDoc = () => {
+    if (ctxMenu.value) handleRemoveFromMyDocs(ctxMenu.value.clientMsgNo)
+    closeCtxMenu()
+}
+
+// Close menus when clicking outside
 const closeMoveMenu = () => { moveMenuFile.value = null }
 if (typeof window !== 'undefined') {
     window.addEventListener('click', closeMoveMenu)
+    window.addEventListener('click', closeCtxMenu)
 }
 </script>
 
 <template>
     <div class="files-panel">
         <div class="files-header">
-            <h3>{{ channelName }} · 文件管理</h3>
+            <div class="files-header-title">
+                <h3>{{ groupName || channelName }}<span class="files-header-subtitle"> · 文件管理</span></h3>
+                <p class="files-header-id" v-if="groupName && groupName !== channelName">ID: {{ channelName }}</p>
+            </div>
             <button class="close-btn" @click="emit('close')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                     <path d="M18 6L6 18M6 6l12 12"/>
@@ -209,31 +302,31 @@ if (typeof window !== 'undefined') {
             <div class="category-sidebar">
                 <div class="category-list">
                     <div class="category-item" :class="{ active: selectedCategoryId === null }"
-                        @click="selectedCategoryId = null; selectMode = false">
+                        @click="selectCategory(null)">
                         <span class="cat-icon">📁</span>
                         <span class="cat-name">全部文件</span>
                         <span class="cat-count">{{ allFiles.filter(f => !fileCategoryId[f.clientMsgNo]).length }}</span>
                     </div>
                     <div class="category-item" :class="{ active: selectedCategoryId === '__images' }"
-                        @click="selectedCategoryId = '__images'; selectMode = false">
+                        @click="selectCategory('__images')">
                         <span class="cat-icon">🖼️</span>
                         <span class="cat-name">图片</span>
                         <span class="cat-count">{{ imageFiles.length }}</span>
                     </div>
                     <div class="category-item" :class="{ active: selectedCategoryId === '__videos' }"
-                        @click="selectedCategoryId = '__videos'; selectMode = false">
+                        @click="selectCategory('__videos')">
                         <span class="cat-icon">🎬</span>
                         <span class="cat-name">视频</span>
                         <span class="cat-count">{{ videoFiles.length }}</span>
                     </div>
                     <div class="category-item" :class="{ active: selectedCategoryId === '__audios' }"
-                        @click="selectedCategoryId = '__audios'; selectMode = false">
+                        @click="selectCategory('__audios')">
                         <span class="cat-icon">🎵</span>
                         <span class="cat-name">音频</span>
                         <span class="cat-count">{{ audioFiles.length }}</span>
                     </div>
                     <div class="category-item" :class="{ active: selectedCategoryId === '__docs' }"
-                        @click="selectedCategoryId = '__docs'; selectMode = false">
+                        @click="selectCategory('__docs')">
                         <span class="cat-icon">📄</span>
                         <span class="cat-name">文档</span>
                         <span class="cat-count">{{ docFiles.length }}</span>
@@ -241,9 +334,18 @@ if (typeof window !== 'undefined') {
 
                     <div class="cat-separator"></div>
 
+                    <div class="category-item my-docs-item" :class="{ active: selectedCategoryId === '__mydocs' }"
+                        @click="selectCategory('__mydocs')">
+                        <span class="cat-icon">📌</span>
+                        <span class="cat-name">我的文档</span>
+                        <span class="cat-count">{{ myDocsFiles.length }}</span>
+                    </div>
+
+                    <div class="cat-separator"></div>
+
                     <div v-for="cat in categories" :key="cat.id" class="category-item"
                         :class="{ active: selectedCategoryId === cat.id }"
-                        @click="selectedCategoryId = cat.id; selectMode = false"
+                        @click="selectCategory(cat.id)"
                         @contextmenu.prevent="handleRenameStart(cat.id)">
 
                         <template v-if="renamingId === cat.id">
@@ -252,7 +354,7 @@ if (typeof window !== 'undefined') {
                         </template>
                         <template v-else>
                             <span class="cat-icon">🏷️</span>
-                            <span class="cat-name">{{ truncate(cat.name, 8) }}</span>
+                            <span class="cat-name" :title="cat.name">{{ cat.name }}</span>
                             <span class="cat-count">{{ categoryCounts[cat.id] || 0 }}</span>
                             <div class="cat-actions" @click.stop>
                                 <button class="cat-action-btn" title="重命名" @click="handleRenameStart(cat.id)">
@@ -290,41 +392,57 @@ if (typeof window !== 'undefined') {
                 <!-- Toolbar -->
                 <div class="file-toolbar">
                     <span class="toolbar-title">
-                        {{ selectedCategoryId === '__images' ? '图片' :
+                        {{ selectedCategoryId === '__mydocs' ? '我的文档' :
+                           selectedCategoryId === '__images' ? '图片' :
                            selectedCategoryId === '__docs' ? '文档' :
                            selectedCategoryId === null ? '全部文件' :
                            categories.find(c => c.id === selectedCategoryId)?.name || '文件' }}
                         <span class="toolbar-count">({{ activeTabCount }})</span>
                     </span>
                     <div class="toolbar-actions">
-                        <button v-if="selectMode" class="toolbar-btn" @click="selectAll">全选</button>
-                        <button v-if="selectMode && selectedFiles.size > 0" class="toolbar-btn toolbar-btn-primary"
-                            @click="batchMoveTo(null)">移出分类</button>
-                        <div v-if="selectMode && selectedFiles.size > 0 && categories.length > 0" class="batch-move-dropdown">
-                            <button class="toolbar-btn toolbar-btn-primary">移至... ▾</button>
-                            <div class="batch-move-menu">
-                                <div v-for="cat in categories" :key="cat.id" class="batch-move-item"
-                                    @click="batchMoveTo(cat.id)">
-                                    {{ cat.name }}
+                        <div class="search-box" v-if="!isMyDocs">
+                            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                            </svg>
+                            <input class="search-input" v-model="searchQuery" placeholder="搜索文件名或发送人..." />
+                            <button class="search-clear" v-if="searchQuery" @click="searchQuery = ''" title="清除">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                    <path d="M18 6L6 18M6 6l12 12"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <template v-if="!isMyDocs">
+                            <button v-if="selectMode" class="toolbar-btn" @click="selectAll">全选</button>
+                            <button v-if="selectMode && selectedFiles.size > 0" class="toolbar-btn toolbar-btn-primary"
+                                @click="batchMoveTo(null)">移出分类</button>
+                            <div v-if="selectMode && selectedFiles.size > 0 && categories.length > 0" class="batch-move-dropdown">
+                                <button class="toolbar-btn toolbar-btn-primary">移至... ▾</button>
+                                <div class="batch-move-menu">
+                                    <div v-for="cat in categories" :key="cat.id" class="batch-move-item"
+                                        @click="batchMoveTo(cat.id)">
+                                        {{ cat.name }}
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <button class="toolbar-btn" @click="toggleSelectMode"
-                            :class="{ active: selectMode }">
-                            {{ selectMode ? '取消' : '选择' }}
-                        </button>
+                            <button class="toolbar-btn" @click="toggleSelectMode"
+                                :class="{ active: selectMode }">
+                                {{ selectMode ? '取消' : '选择' }}
+                            </button>
+                        </template>
                     </div>
                 </div>
 
                 <!-- Empty -->
                 <div class="files-empty" v-if="activeTabCount === 0">
-                    <span>暂无文件</span>
+                    <span v-if="searchQuery">未找到匹配"{{ searchQuery }}"的文件</span>
+                    <span v-else>暂无文件</span>
                 </div>
 
-                <!-- Image grid -->
-                <div class="image-grid" v-if="selectedCategoryId === '__images' && activeTabCount > 0">
-                    <div class="file-card image-card" v-for="f in filesInCategory" :key="f.clientMsgNo"
-                        :class="{ 'file-selected': selectedFiles.has(f.clientMsgNo) }">
+                <!-- Image grid (channel images only, not my docs) -->
+                <div class="image-grid" v-if="selectedCategoryId === '__images' && activeTabCount > 0 && !isMyDocs">
+                    <div class="file-card image-card" v-for="f in displayedFiles" :key="f.clientMsgNo"
+                        :class="{ 'file-selected': selectedFiles.has(f.clientMsgNo) }"
+                        @contextmenu="(e: MouseEvent) => onContextMenu(e, f.clientMsgNo)">
                         <div class="file-check" v-if="selectMode" @click="toggleFileSelect(f.clientMsgNo)">
                             <div class="checkbox" :class="{ checked: selectedFiles.has(f.clientMsgNo) }">
                                 <svg v-if="selectedFiles.has(f.clientMsgNo)" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -336,8 +454,9 @@ if (typeof window !== 'undefined') {
                         <div class="image-name" :title="f.name">{{ f.name }}</div>
                         <div class="image-meta">
                             <span class="image-sender">{{ f.sender }}</span>
+                            <span class="image-date">{{ formatDate(f.timestamp) }}</span>
                             <span class="image-size" v-if="f.width">{{ f.width }}×{{ f.height }}</span>
-                            <div class="file-move-trigger" v-if="!selectMode" @click.stop="toggleMoveMenu(f.clientMsgNo)">
+                            <div class="file-move-trigger" v-if="!selectMode && !isMyDocs" @click.stop="toggleMoveMenu(f.clientMsgNo)">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                             </div>
                         </div>
@@ -357,9 +476,10 @@ if (typeof window !== 'undefined') {
                 </div>
 
                 <!-- Doc list -->
-                <div class="doc-list" v-if="(selectedCategoryId === '__docs' || selectedCategoryId === null || (selectedCategoryId && selectedCategoryId !== '__images')) && activeTabCount > 0">
-                    <div class="file-card doc-item" v-for="f in filesInCategory" :key="f.clientMsgNo"
-                        :class="{ 'file-selected': selectedFiles.has(f.clientMsgNo) }">
+                <div class="doc-list" v-if="(selectedCategoryId === '__mydocs' || selectedCategoryId === '__docs' || selectedCategoryId === null || (selectedCategoryId && selectedCategoryId !== '__images')) && activeTabCount > 0">
+                    <div class="file-card doc-item" v-for="f in displayedFiles" :key="f.clientMsgNo"
+                        :class="{ 'file-selected': selectedFiles.has(f.clientMsgNo) }"
+                        @contextmenu="(e: MouseEvent) => onContextMenu(e, f.clientMsgNo)">
                         <div class="file-check" v-if="selectMode" @click="toggleFileSelect(f.clientMsgNo)">
                             <div class="checkbox" :class="{ checked: selectedFiles.has(f.clientMsgNo) }">
                                 <svg v-if="selectedFiles.has(f.clientMsgNo)" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -370,18 +490,19 @@ if (typeof window !== 'undefined') {
                             <img v-if="f.isImage" :src="f.url" class="doc-thumb" loading="lazy" />
                             <span v-else class="doc-icon">{{ fileIcon(f.mime) }}</span>
                             <div class="doc-info">
-                                <span class="doc-name">{{ truncate(f.name, 22) }}</span>
+                                <span class="doc-name" :title="f.name">{{ f.name }}</span>
                                 <span class="doc-meta">
                                     <span class="doc-type-tag">{{ fileTypeLabel(f.mime) }}</span>
                                     <template v-if="f.isImage && f.width"> · {{ f.width }}×{{ f.height }}</template>
                                     <template v-if="f.sizeText"> · {{ f.sizeText }}</template>
                                     <template v-if="f.sender"> · {{ f.sender }}</template>
+                                    <template v-if="f.timestamp"> · {{ formatDate(f.timestamp) }}</template>
                                 </span>
                             </div>
                         </a>
                         <div class="doc-right">
                             <div class="category-tag" v-if="categoryNameFor(f.clientMsgNo)">{{ categoryNameFor(f.clientMsgNo) }}</div>
-                            <div class="file-move-trigger" v-if="!selectMode" @click.stop="toggleMoveMenu(f.clientMsgNo)">
+                            <div class="file-move-trigger" v-if="!selectMode && !isMyDocs" @click.stop="toggleMoveMenu(f.clientMsgNo)">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                             </div>
                         </div>
@@ -407,12 +528,35 @@ if (typeof window !== 'undefined') {
                 <img :src="previewUrl" @click.stop="" />
             </div>
         </transition>
+
+        <!-- Context menu -->
+        <div class="ctx-menu" v-if="ctxMenu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
+            <div class="ctx-menu-item" @click="handleLocate">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>
+                </svg>
+                <span>定位到聊天</span>
+            </div>
+            <div class="ctx-menu-divider" v-if="!isMyDocs || ctxMenu"></div>
+            <div class="ctx-menu-item" v-if="!isMyDocs && ctxMenu && !myDocsMsgNos.has(ctxMenu.clientMsgNo)" @click="handleSaveDoc">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>
+                </svg>
+                <span>保存到我的文档</span>
+            </div>
+            <div class="ctx-menu-item ctx-menu-item-danger" v-if="isMyDocs" @click="handleRemoveDoc">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                <span>从我的文档移除</span>
+            </div>
+        </div>
     </div>
 </template>
 
 <style scoped>
 .files-panel {
-    width: 450px;
+    width: 540px;
     flex-shrink: 0;
     background: var(--bg-card);
     border-left: 1px solid var(--border);
@@ -438,6 +582,24 @@ if (typeof window !== 'undefined') {
     font-weight: 700;
     color: var(--text);
     letter-spacing: -0.01em;
+}
+
+.files-header-subtitle {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.files-header-id {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: 2px 0 0 0;
+    font-weight: 400;
+}
+
+.files-header-title {
+    display: flex;
+    flex-direction: column;
 }
 
 .close-btn {
@@ -468,7 +630,7 @@ if (typeof window !== 'undefined') {
 
 /* ---- Category sidebar ---- */
 .category-sidebar {
-    width: 150px;
+    width: 180px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
     display: flex;
@@ -698,6 +860,11 @@ if (typeof window !== 'undefined') {
     font-size: 13px;
     font-weight: 700;
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 8px;
 }
 
 .toolbar-count {
@@ -747,6 +914,66 @@ if (typeof window !== 'undefined') {
     opacity: 0.9;
 }
 
+/* ---- Search ---- */
+.search-box {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 0 8px;
+    height: 28px;
+    transition: border-color 0.15s;
+}
+
+.search-box:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(30, 58, 95, 0.1);
+}
+
+.search-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.search-input {
+    width: 160px;
+    height: 100%;
+    border: none;
+    background: transparent;
+    font-size: 12px;
+    color: var(--text);
+    outline: none;
+    font-weight: 500;
+}
+
+.search-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.search-clear {
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+    transition: all 0.15s;
+}
+
+.search-clear:hover {
+    background: var(--bg-elevated);
+    color: var(--text);
+}
+
 /* ---- Batch move ---- */
 .batch-move-dropdown {
     position: relative;
@@ -778,6 +1005,9 @@ if (typeof window !== 'undefined') {
     cursor: pointer;
     border-radius: 6px;
     transition: all 0.15s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .batch-move-item:hover {
@@ -889,6 +1119,14 @@ if (typeof window !== 'undefined') {
     cursor: pointer;
     border-radius: 6px;
     transition: all 0.15s;
+    gap: 8px;
+}
+
+.move-menu-item span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
 }
 
 .move-menu-item:hover {
@@ -998,6 +1236,12 @@ if (typeof window !== 'undefined') {
     white-space: nowrap;
     flex: 1;
     font-weight: 500;
+}
+
+.image-date {
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
 }
 
 .image-size {
@@ -1135,6 +1379,76 @@ if (typeof window !== 'undefined') {
 .fade-enter-from,
 .fade-leave-to {
     opacity: 0;
+}
+
+/* ---- Context menu ---- */
+.ctx-menu {
+    position: fixed;
+    z-index: 3000;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    padding: 6px;
+    min-width: 150px;
+    backdrop-filter: blur(12px);
+}
+
+.ctx-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    border-radius: 7px;
+    transition: all 0.15s;
+    font-weight: 500;
+}
+
+.ctx-menu-item:hover {
+    background: var(--bg-elevated);
+    color: var(--primary);
+}
+
+.ctx-menu-item svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.ctx-menu-item:hover svg {
+    color: var(--primary);
+}
+
+.ctx-menu-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 8px;
+}
+
+.ctx-menu-item-danger:hover {
+    background: rgba(239, 68, 68, 0.08);
+    color: #ef4444;
+}
+
+.ctx-menu-item-danger:hover svg {
+    color: #ef4444;
+}
+
+/* ---- My Docs sidebar item ---- */
+.my-docs-item {
+    margin-top: 2px;
+}
+
+.my-docs-item.active {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.25);
+}
+
+.my-docs-item.active .cat-count {
+    background: rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.85);
 }
 
 /* ---- Scrollbar ---- */

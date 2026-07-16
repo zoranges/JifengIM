@@ -75,3 +75,7 @@ docker/single-node/prometheus/
 docker/uploads/
 .vite/
 demo/chatdemo/package-lock.json
+docker/biz-data/backups/
+wkdb
+*-shm
+*-wal
