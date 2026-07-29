@@ -138,7 +138,7 @@ export default class APIClient {
     // 然后后台接口再调用WuKongIM的接口，这样自己的后台可以返回一些自己的业务数据填充到Message.remoteExtra中
     syncMessages = async (channel: Channel,opts: SyncOptions) => {
         let resultMessages = new Array<Message>()
-        const limit = 30;
+        const limit = opts.limit || 30;
         const resp = await APIClient.shared.post('/channel/messagesync', {
             login_uid: WKSDK.shared().config.uid,
             channel_id: channel.channelID,
@@ -188,7 +188,8 @@ export default class APIClient {
             // 这里uid指定的是自己，意味着如果是多端登录，其他端也会收到这条消息
             this.sendCMD(new Channel(WKSDK.shared().config.uid!,ChannelTypePerson),CMDType.CMDTypeClearUnread,channel)
         }).catch((err) => {
-            alert(err.msg)
+            // 新会话可能还没有 conversation 记录，静默忽略
+            console.warn('[clearUnread] ignored:', err.msg)
         })
     }
 

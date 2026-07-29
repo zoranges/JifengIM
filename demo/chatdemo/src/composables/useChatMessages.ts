@@ -221,7 +221,7 @@ export function useChatMessages(to: Ref<Channel>, uid: string, chatRef: Ref<HTML
         debugRevokeStore()
         try {
             const msgs = await WKSDK.shared().chatManager.syncMessages(to.value, {
-                limit: 15, startMessageSeq: 0, endMessageSeq: 0,
+                limit: 2000, startMessageSeq: 0, endMessageSeq: 0,
                 pullMode: PullMode.Up,
             })
             for (const m of msgs) {
@@ -283,6 +283,48 @@ export function useChatMessages(to: Ref<Channel>, uid: string, chatRef: Ref<HTML
             const firstMsgEl = document.getElementById(firstMsg.clientMsgNo)
             if (firstMsgEl) chat!.scrollTop = firstMsgEl.offsetTop
         })
+    }
+
+    // 拉取全部历史消息 — 用于文件面板等需要全量数据的场景
+    const syncingAll = ref(false)
+    const syncAllMessages = async () => {
+        if (syncingAll.value) return
+        if (messages.value.length === 0) {
+            await pullLast()
+        }
+        syncingAll.value = true
+        try {
+            let round = 0
+            const maxRounds = 50 // 安全上限，防止无限循环
+            while (messages.value.length > 0 && round < maxRounds) {
+                const firstMsg = messages.value[0]
+                if (firstMsg.messageSeq <= 1) break
+                const limit = 30
+                const msgs = await WKSDK.shared().chatManager.syncMessages(to.value, {
+                    limit, startMessageSeq: firstMsg.messageSeq - 1, endMessageSeq: 0,
+                    pullMode: PullMode.Down,
+                })
+                if (!msgs || msgs.length === 0) break
+                for (const m of msgs) {
+                    if (m.setting.streamOn) {
+                        renderStreamText(m)
+                        if (m.streamText && m.streamText.length > 0) {
+                            const htmlText = await marked.parse(m.streamText)
+                            m.content = new MessageText(htmlText)
+                        }
+                    }
+                }
+                const fresh = dedupeAgainstExisting(msgs)
+                if (fresh.length === 0) break
+                fresh.reverse().forEach((m) => { messages.value.unshift(m) })
+                applyRevokes(messages.value, to.value.channelID, to.value.channelType)
+                messages.value = [...messages.value]
+                round++
+            }
+            pulldownFinished.value = true
+        } finally {
+            syncingAll.value = false
+        }
     }
 
     const handleScroll = () => {
@@ -615,7 +657,7 @@ export function useChatMessages(to: Ref<Channel>, uid: string, chatRef: Ref<HTML
         messages, displayMessages, text, pulldowning, pulldownFinished,
         msgInputPlaceholder, streamNo, isComposing, hasHandled,
         setupListeners, teardownListeners,
-        pullLast, pullDown, handleScroll, scrollBottom,
+        pullLast, pullDown, syncAllMessages, syncingAll, handleScroll, scrollBottom,
         onSend, onCustomMessageSend,
         isFirstInGroup, isLastInGroup, formatMsgTime,
         addSystemEvent, isSystemMessage,

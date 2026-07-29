@@ -78,10 +78,11 @@ function parseFilePayload(text: string): { name: string; size: number; url: stri
     }
 }
 
-export function useGroupFiles(messages: Message[]) {
+export function useGroupFiles(messages: () => Message[]) {
     const allFiles = computed<FileItem[]>(() => {
+        const msgs = messages()
         const result: FileItem[] = []
-        for (const m of messages) {
+        for (const m of msgs) {
             try {
                 if (m.contentType === MessageContentType.image) {
                     const c = (m as any).content
@@ -123,6 +124,17 @@ export function useGroupFiles(messages: Message[]) {
             } catch (_) { /* skip malformed message */ }
         }
         result.reverse()
+
+        // Debug: log total extracted files
+        if (typeof window !== 'undefined' && (window as any).__debugGroupFiles !== false) {
+            const fileMsgs = result.filter(f => !f.isImage)
+            if (fileMsgs.length > 0) {
+                console.log(`[useGroupFiles] 从${msgs.length}条消息中提取了${result.length}个文件（含${result.filter(f => f.isImage).length}张图片，${fileMsgs.length}个文件）`)
+                // Only log once, then disable
+                ;(window as any).__debugGroupFiles = false
+            }
+        }
+
         return result
     })
 
