@@ -79,3 +79,4 @@ docker/biz-data/backups/
 wkdb
 *-shm
 *-wal
+backups/
