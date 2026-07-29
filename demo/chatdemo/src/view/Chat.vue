@@ -19,13 +19,13 @@ import { useMarkdown } from '../composables/useMarkdown'
 import { useFileUpload } from '../composables/useFileUpload'
 import { useChatMessages } from '../composables/useChatMessages'
 import GroupFilesPanel from './GroupFiles.vue'
+import PersonalFiles from './PersonalFiles.vue'
 import CalendarPanel from '../components/Calendar.vue'
 import CreateGroupModal from '../components/CreateGroupModal.vue'
 import JoinGroupModal from '../components/JoinGroupModal.vue'
 import GroupInfoPanel from '../components/GroupInfoPanel.vue'
 import GroupSettingsModal from '../components/GroupSettingsModal.vue'
 import MyGroupsList from '../components/MyGroupsList.vue'
-import EnterpriseMembers from '../components/EnterpriseMembers.vue'
 import InviteMembersModal from '../components/InviteMembersModal.vue'
 import PinnedMessagesCard from '../components/PinnedMessagesCard.vue'
 import { useGroupManager } from '../composables/useGroupManager'
@@ -103,7 +103,7 @@ const uid = authStore.uid
 const token = authStore.imToken
 
 // Sidebar tab
-const sidebarTab = ref<'conversations' | 'groups' | 'members'>('conversations')
+const sidebarTab = ref<'conversations' | 'groups' | 'files'>('conversations')
 
 // Group management
 const showCreateGroup = ref(false)
@@ -197,25 +197,36 @@ const userDisplayName = computed(() => authStore.name || authStore.uid)
 
 const channelDisplayName = computed(() => {
     if (!to.value.channelID) return ''
+    // Group channels: prefer group manager name
     if (!p2p.value && groupManager.currentGroup.value?.name) {
         return groupManager.currentGroup.value.name
     }
-    // Try SDK channel info (populated by biz-backend via channelInfoCallback)
+    // Try SDK channel info title (populated by biz-backend via channelInfoCallback)
     const ci = WKSDK.shared().channelManager.getChannelInfo(to.value)
-    if (ci?.title && ci.title !== to.value.channelID.charAt(0).toUpperCase()) {
-        return ci.title
-    }
-    return to.value.channelID
+    if (ci?.title) return ci.title
+    // Person channels: return peer name from orgData
+    if (p2p.value && ci?.orgData?.peerName) return ci.orgData.peerName
+    // Fallback for person channels
+    if (p2p.value) return '用户'
+    // Fallback for group channels
+    return '群聊'
 })
 
-title.value = `${userDisplayName.value} (未连接)`
+// Keep title in sync with userDisplayName
+const updateTitle = (status: string) => { title.value = `${userDisplayName.value} ${status}` }
+watch(userDisplayName, () => {
+  // Preserve current status when name changes
+  const currentStatus = title.value.includes('(') ? title.value.slice(title.value.indexOf('(')) : '(未连接)'
+  title.value = `${userDisplayName.value} ${currentStatus}`
+})
+updateTitle('(未连接)')
 
 const {
     messages, displayMessages, text, msgInputPlaceholder,
     pulldowning, pulldownFinished,
     isComposing, hasHandled,
     setupListeners, teardownListeners,
-    pullLast, handleScroll, scrollBottom,
+    pullLast, syncAllMessages, syncingAll, handleScroll, scrollBottom,
     onSend: _onSend, onCustomMessageSend: _onCustomMessageSend,
     isFirstInGroup, isLastInGroup, formatMsgTime,
     addSystemEvent, isSystemMessage,
@@ -356,7 +367,8 @@ const settingOKClick = () => {
     showSettingPanel.value = false
     clearMessages()
     pullLast()
-    addSystemEvent(`你邀请 ${channelID.value} 加入了会话`)
+    const peerName = WKSDK.shared().channelManager.getChannelInfo(to.value)?.title || channelID.value
+    addSystemEvent(`你邀请 ${peerName} 加入了会话`)
 }
 const onSelectChannel = (channel: Channel) => {
     to.value = channel
@@ -365,13 +377,37 @@ const onSelectChannel = (channel: Channel) => {
     showSettingPanel.value = false
     clearMessages()
     pullLast()
+
+    // 清除该会话的未读计数（无论从会话列表还是群聊列表进入）
+    const conv = WKSDK.shared().conversationManager.findConversation(channel)
+    if (conv && conv.unread > 0) {
+      conv.unread = 0
+      WKSDK.shared().conversationManager.notifyConversationListeners(conv, 2/*update*/)
+    }
+    // 通知服务器已读
+    APIClient.shared.clearUnread(channel).catch(() => {})
+
     if (channel.channelType === ChannelTypeGroup) {
         groupManager.fetchGroupInfo(channel.channelID)
         fetchPinnedMessages()
         addSystemEvent(`你进入了群聊`)
     } else {
-        addSystemEvent(`你加入了与 ${channel.channelID} 的会话`)
+        const name = WKSDK.shared().channelManager.getChannelInfo(channel)?.title || channel.channelID
+        addSystemEvent(`你加入了与 ${name} 的会话`)
     }
+}
+
+// 当前频道收到新消息时立即标记已读（避免在聊天中未读继续累积）
+const currentChannelUnreadListener = (conv: any, action: any) => {
+  if (!to.value.channelID || !to.value.channelType) return
+  if (conv.channel?.channelID === to.value.channelID &&
+      conv.channel?.channelType === to.value.channelType) {
+    if (conv.unread > 0) {
+      conv.unread = 0
+      WKSDK.shared().conversationManager.notifyConversationListeners(conv, 2/*update*/)
+      APIClient.shared.clearUnread(to.value).catch(() => {})
+    }
+  }
 }
 
 const logout = () => {
@@ -466,6 +502,8 @@ const toggleFilesPanel = () => {
     showFilesPanel.value = !showFilesPanel.value
     if (showFilesPanel.value) {
         showFilesOnly.value = false
+        // 打开文件面板时自动拉取全部消息，确保文件分类列表完整
+        syncAllMessages()
     }
 }
 
@@ -506,19 +544,66 @@ const insertMention = (label: string) => {
     showMentionMenu.value = false
 }
 
-// Unread count
+// ─── 未读计数 (事件驱动，维护本地 Map) ───────────────
 const totalUnread = ref(0)
-let unreadTimer: ReturnType<typeof setInterval> | null = null
-const updateUnreadCount = () => {
-    const count = WKSDK.shared().conversationManager.getAllUnreadCount()
-    totalUnread.value = count
-    document.title = count > 0 ? `(${count > 99 ? '99+' : count}) 极速通` : '极速通'
+const conversationsUnread = ref(0)  // 单聊未读
+const groupsUnread = ref(0)         // 群聊未读
+
+// channelKey → { channelType, unread }
+const unreadMap = new Map<string, { channelType: number; unread: number }>()
+
+const channelKey = (ch: any): string => `${ch.channelID}:${ch.channelType}`
+
+const recalcUnread = () => {
+  let convUnread = 0
+  let grpUnread = 0
+  for (const { channelType, unread } of unreadMap.values()) {
+    if (channelType === 1) convUnread += unread
+    else if (channelType === 2) grpUnread += unread
+  }
+  totalUnread.value = convUnread + grpUnread
+  conversationsUnread.value = convUnread
+  groupsUnread.value = grpUnread
+  document.title = totalUnread.value > 0 ? `(${totalUnread.value > 99 ? '99+' : totalUnread.value}) 极速通` : '极速通'
 }
+
+// 会话变更时实时更新 unreadMap
+const unreadConvListener = (conv: any, action: any) => {
+  const key = channelKey(conv.channel)
+  if (action === 0/*remove*/) {
+    unreadMap.delete(key)
+  } else {
+    unreadMap.set(key, {
+      channelType: conv.channel?.channelType || 1,
+      unread: (conv as any).unread || 0,
+    })
+  }
+  recalcUnread()
+}
+
+// 启动时从 SDK 拉取已有会话填充 map
+const initUnreadMap = async () => {
+  try {
+    const all: any[] = await (WKSDK.shared().conversationManager as any).sync?.() || []
+    for (const c of all) {
+      unreadMap.set(channelKey(c.channel), {
+        channelType: c.channel?.channelType || 1,
+        unread: (c as any).unread || 0,
+      })
+    }
+    recalcUnread()
+  } catch { /* SDK sync may not be available, use listener-driven updates */ }
+}
+
 onMounted(() => {
-    unreadTimer = setInterval(updateUnreadCount, 3000)
+  WKSDK.shared().conversationManager.addConversationListener(unreadConvListener)
+  WKSDK.shared().conversationManager.addConversationListener(currentChannelUnreadListener)
+  // 连接后拉取初始数据
+  setTimeout(() => initUnreadMap(), 800)
 })
+
 onUnmounted(() => {
-    if (unreadTimer) clearInterval(unreadTimer)
+  WKSDK.shared().conversationManager.removeConversationListener(unreadConvListener)
 })
 
 
@@ -603,17 +688,17 @@ onUnmounted(() => {
                                 class="sidebar-tab"
                                 :class="{ active: sidebarTab === 'conversations' }"
                                 @click="sidebarTab = 'conversations'"
-                            >会话</button>
+                            >会话<span class="tab-badge" v-if="conversationsUnread > 0">{{ conversationsUnread > 99 ? '99+' : conversationsUnread }}</span></button>
                             <button
                                 class="sidebar-tab"
                                 :class="{ active: sidebarTab === 'groups' }"
                                 @click="sidebarTab = 'groups'; refreshMyGroups()"
-                            >群聊</button>
+                            >群聊<span class="tab-badge" v-if="groupsUnread > 0">{{ groupsUnread > 99 ? '99+' : groupsUnread }}</span></button>
                             <button
                                 class="sidebar-tab"
-                                :class="{ active: sidebarTab === 'members' }"
-                                @click="sidebarTab = 'members'"
-                            >成员</button>
+                                :class="{ active: sidebarTab === 'files' }"
+                                @click="sidebarTab = 'files'"
+                            >文件</button>
                         </div>
                         <button class="admin-entry-btn" v-if="isAdmin" @click="router.push('/admin')">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -636,12 +721,14 @@ onUnmounted(() => {
                         @createGroup="showCreateGroup = true"
                         @joinGroup="showJoinGroup = true"
                     />
-                    <EnterpriseMembers v-else-if="sidebarTab === 'members'" @direct-chat="onDirectChat" />
                 </aside>
             </transition>
 
             <!-- Chat area -->
             <main class="chat-main" :class="{ expanded: !sidebarVisible }">
+                <!-- Personal files -->
+                <PersonalFiles v-if="sidebarTab === 'files'" />
+                <template v-else>
                 <!-- Empty state -->
                 <div class="empty-state" v-if="!to.channelID">
                     <div class="empty-icon">
@@ -739,7 +826,7 @@ onUnmounted(() => {
                     </div>
                     <div class="reply-bar" v-if="replyingTo">
                         <div class="reply-bar-content">
-                            <span class="reply-bar-label">回复 {{ replyingTo.fromUID }}:</span>
+                            <span class="reply-bar-label">回复 {{ getNickname(replyingTo.fromUID) }}:</span>
                             <span class="reply-bar-text">{{ (replyingTo.content as any)?.conversationDigest || (replyingTo.content as any)?.text || '' }}</span>
                         </div>
                         <button class="reply-bar-close" @click="cancelReply" title="取消回复">
@@ -800,6 +887,7 @@ onUnmounted(() => {
                         </button>
                     </div>
                 </div>
+                </template>
             </main>
 
             <!-- File management panel -->
@@ -869,7 +957,8 @@ onUnmounted(() => {
         <GroupInfoPanel v-if="to.channelID && !p2p && showGroupInfo" :groupId="to.channelID" :key="to.channelID"
             @close="showGroupInfo = false"
             @openSettings="showGroupSettings = true"
-            @invite="inviteTargetGroupId = to.channelID; showInviteModal = true" />
+            @invite="inviteTargetGroupId = to.channelID; showInviteModal = true"
+            @directChat="(targetUid: string) => { showGroupInfo = false; onDirectChat(targetUid) }" />
 
         <!-- Invite members modal -->
         <InviteMembersModal v-if="showInviteModal" :groupId="inviteTargetGroupId"
@@ -1084,6 +1173,22 @@ onUnmounted(() => {
 
 .sidebar-tab:hover:not(.active) {
     color: var(--text);
+}
+
+.tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 4px;
+    vertical-align: middle;
 }
 
 .admin-entry-btn {
