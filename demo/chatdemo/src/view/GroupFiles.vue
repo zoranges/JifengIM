@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { Message } from 'wukongimjssdk'
 import { useGroupFiles, type FileItem } from '../composables/useGroupFiles'
 import {
-    getCategories, getFileCategoryId, getCategoryCounts,
-    createCategory, renameCategory, deleteCategory,
-    moveFile, batchMoveFiles,
-} from '../services/fileOrgStore'
+    listCategories, createCategory, renameCategory, deleteCategory,
+    moveFile, batchMoveFiles, getMappings,
+    type GroupFileCategory,
+} from '../services/groupFileService'
 import { getMyDocs, saveToMyDocs, removeFromMyDocs, isInMyDocs, type SavedFile } from '../services/personalFileStore'
 
 const props = defineProps<{
@@ -22,27 +22,135 @@ const emit = defineEmits<{
     (e: 'locate', clientMsgNo: string): void
 }>()
 
-const { allFiles, imageFiles, videoFiles, audioFiles, docFiles } = useGroupFiles(props.messages)
+const { allFiles, imageFiles, videoFiles, audioFiles, docFiles } = useGroupFiles(() => props.messages)
 
 const channelType = computed(() => props.channelType)
 
-// ---- Category state ----
-const categories = ref(getCategories(props.channelName, channelType.value))
+// ---- Category state (server-backed, shared among group members) ----
+const categories = ref<GroupFileCategory[]>([])
 const fileCategoryId = ref<Record<string, string | null>>({})
 const categoryCounts = ref<Record<string, number>>({})
 const selectedCategoryId = ref<string | null>(null) // null = all files
+const storeLoading = ref(false)
 
-const refreshStore = () => {
-    categories.value = getCategories(props.channelName, channelType.value)
-    categoryCounts.value = getCategoryCounts(props.channelName, channelType.value)
-    const map: Record<string, string | null> = {}
-    for (const f of allFiles.value) {
-        map[f.clientMsgNo] = getFileCategoryId(props.channelName, channelType.value, f.clientMsgNo)
+const refreshStore = async () => {
+    storeLoading.value = true
+    try {
+        const [catResult, mapResult] = await Promise.all([
+            listCategories(props.channelName),
+            getMappings(props.channelName),
+        ])
+        categories.value = catResult.categories
+        fileCategoryId.value = mapResult.mappings
+
+        // Compute counts from mappings
+        const counts: Record<string, number> = {}
+        for (const cat of catResult.categories) {
+            counts[cat.id] = 0
+        }
+        for (const catId of Object.values(mapResult.mappings)) {
+            if (catId) counts[catId] = (counts[catId] || 0) + 1
+        }
+        categoryCounts.value = counts
+
+        return catResult.categories
+    } catch {
+        // Silently handle — categories may not be available
+    } finally {
+        storeLoading.value = false
     }
-    fileCategoryId.value = map
 }
 
-refreshStore()
+// ─── One-time migration: localStorage → server ──────────
+// Merge strategy: each member's local categories are pushed to server
+// on first load. If server already has same-named category, skip.
+// File mappings always upsert (latest write wins).
+// Never silently discard local data — always merge what we can.
+const OLD_STORAGE_PREFIX = 'wk_file_org_'
+
+function oldStoreKey(): string {
+    return `${OLD_STORAGE_PREFIX}${props.channelName}_${channelType.value}`
+}
+
+function loadOldLocalData(): { categories: { id: string; name: string; order: number }[]; fileToCategory: Record<string, string> } | null {
+    try {
+        const raw = localStorage.getItem(oldStoreKey())
+        if (raw) return JSON.parse(raw)
+    } catch { /* ignore */ }
+    return null
+}
+
+async function migrateLocalToServer() {
+    const old = loadOldLocalData()
+    if (!old || !old.categories || old.categories.length === 0) return
+
+    const serverCats = await listCategories(props.channelName).catch(() => ({ categories: [] }))
+    const existingNames = new Set(serverCats.categories.map(c => c.name))
+
+    console.log(`[migrate] 本地 ${old.categories.length} 个分类, ${Object.keys(old.fileToCategory || {}).length} 条映射; 服务端已有 ${serverCats.categories.length} 个分类`)
+
+    // Create categories that don't exist yet on server (match by name)
+    const sorted = [...old.categories].sort((a, b) => a.order - b.order)
+    const idMap: Record<string, string> = {} // oldId → new server UUID
+
+    // Build map for categories that already exist on server (same name)
+    for (const oldCat of sorted) {
+        const match = serverCats.categories.find(c => c.name === oldCat.name)
+        if (match) {
+            idMap[oldCat.id] = match.id
+        }
+    }
+
+    // Create only categories that don't have a match
+    const toCreate = sorted.filter(c => !existingNames.has(c.name))
+    if (toCreate.length > 0) {
+        console.log(`[migrate] 新增 ${toCreate.length} 个分类:`, toCreate.map(c => c.name).join(', '))
+    }
+    for (const cat of toCreate) {
+        try {
+            const result = await createCategory(props.channelName, cat.name)
+            idMap[cat.id] = result.category.id
+        } catch (e) {
+            console.warn('[migrate] 创建分类失败:', cat.name, e)
+        }
+    }
+
+    // Upload file mappings using new category IDs
+    const mappings = old.fileToCategory || {}
+    const byNewCat: Record<string, string[]> = {}
+    for (const [clientMsgNo, oldCatId] of Object.entries(mappings)) {
+        const newId = idMap[oldCatId]
+        if (!newId) continue // category creation failed or not found
+        if (!byNewCat[newId]) byNewCat[newId] = []
+        byNewCat[newId].push(clientMsgNo)
+    }
+
+    for (const [newCatId, msgNos] of Object.entries(byNewCat)) {
+        if (msgNos.length === 0) continue
+        await batchMoveFiles(props.channelName, msgNos, newCatId).catch(e => {
+            console.warn('[migrate] 迁移映射失败:', newCatId, e)
+        })
+    }
+
+    // Clear old localStorage after successful merge
+    localStorage.removeItem(oldStoreKey())
+    console.log('[migrate] 迁移完成，已清除本地数据')
+
+    // Reload merged data from server
+    await refreshStore()
+}
+
+onMounted(async () => {
+    await refreshStore()
+    // One-time: migrate old localStorage categories → server (shared)
+    migrateLocalToServer()
+})
+
+// Reload when switching to a different group
+watch(() => props.channelName, () => {
+    selectedCategoryId.value = null
+    refreshStore()
+})
 
 // ---- My Docs ----
 const myDocsFiles = ref<SavedFile[]>(getMyDocs(props.uid))
@@ -82,13 +190,17 @@ const showAddCategory = ref(false)
 const renamingId = ref<string | null>(null)
 const renameText = ref('')
 
-const handleAddCategory = () => {
+const handleAddCategory = async () => {
     const name = newCatName.value.trim()
     if (!name) return
-    createCategory(props.channelName, channelType.value, name)
-    newCatName.value = ''
-    showAddCategory.value = false
-    refreshStore()
+    try {
+        await createCategory(props.channelName, name)
+        newCatName.value = ''
+        showAddCategory.value = false
+        await refreshStore()
+    } catch (e: any) {
+        alert('创建分类失败: ' + (e.message || '未知错误'))
+    }
 }
 
 const handleRenameStart = (id: string) => {
@@ -97,20 +209,28 @@ const handleRenameStart = (id: string) => {
     renameText.value = cat?.name || ''
 }
 
-const handleRenameConfirm = () => {
+const handleRenameConfirm = async () => {
     if (!renamingId.value) return
     const name = renameText.value.trim()
     if (name) {
-        renameCategory(props.channelName, channelType.value, renamingId.value, name)
-        refreshStore()
+        try {
+            await renameCategory(props.channelName, renamingId.value, name)
+            await refreshStore()
+        } catch (e: any) {
+            alert('重命名失败: ' + (e.message || '未知错误'))
+        }
     }
     renamingId.value = null
 }
 
-const handleDeleteCategory = (id: string) => {
-    deleteCategory(props.channelName, channelType.value, id)
-    if (selectedCategoryId.value === id) selectedCategoryId.value = null
-    refreshStore()
+const handleDeleteCategory = async (id: string) => {
+    try {
+        await deleteCategory(props.channelName, id)
+        if (selectedCategoryId.value === id) selectedCategoryId.value = null
+        await refreshStore()
+    } catch (e: any) {
+        alert('删除分类失败: ' + (e.message || '未知错误'))
+    }
 }
 
 // ---- Computed file lists ----
@@ -126,7 +246,21 @@ const filesInCategory = computed(() => {
         return allFiles.value.filter(f => !fileCategoryId.value[f.clientMsgNo])
     }
     const catId = selectedCategoryId.value
-    return allFiles.value.filter(f => fileCategoryId.value[f.clientMsgNo] === catId)
+    const result = allFiles.value.filter(f => fileCategoryId.value[f.clientMsgNo] === catId)
+    // Debug: log when a category is selected but returns empty despite having mappings
+    if (result.length === 0 && categoryCounts.value[catId] > 0) {
+        const catName = categories.value.find(c => c.id === catId)?.name || catId
+        const mappedMsgNos = Object.entries(fileCategoryId.value)
+            .filter(([, cid]) => cid === catId)
+            .map(([msgNo]) => msgNo)
+        const presentMsgNos = allFiles.value.map(f => f.clientMsgNo)
+        const missing = mappedMsgNos.filter(n => !presentMsgNos.includes(n))
+        console.warn(`[GroupFiles] 分类"${catName}"应有${categoryCounts.value[catId]}个文件，但allFiles中未找到。`)
+        console.warn(`[GroupFiles] allFiles总数: ${allFiles.value.length}, 分类映射到的clientMsgNo: ${mappedMsgNos.length}个`)
+        console.warn(`[GroupFiles] 缺失的clientMsgNo (${missing.length}个):`, missing.slice(0, 5), missing.length > 5 ? `...等${missing.length}个` : '')
+        console.warn(`[GroupFiles] allFiles中前5个clientMsgNo:`, presentMsgNos.slice(0, 5))
+    }
+    return result
 })
 
 const isMyDocs = computed(() => selectedCategoryId.value === '__mydocs')
@@ -171,12 +305,16 @@ const selectAll = () => {
     selectedFiles.value = new Set(displayedFiles.value.map(f => f.clientMsgNo))
 }
 
-const batchMoveTo = (categoryId: string | null) => {
+const batchMoveTo = async (categoryId: string | null) => {
     if (selectedFiles.value.size === 0) return
-    batchMoveFiles(props.channelName, channelType.value, Array.from(selectedFiles.value), categoryId)
-    selectedFiles.value = new Set()
-    selectMode.value = false
-    refreshStore()
+    try {
+        await batchMoveFiles(props.channelName, Array.from(selectedFiles.value), categoryId)
+        selectedFiles.value = new Set()
+        selectMode.value = false
+        await refreshStore()
+    } catch (e: any) {
+        alert('移动文件失败: ' + (e.message || '未知错误'))
+    }
 }
 
 // ---- File move dropdown ----
@@ -186,16 +324,28 @@ const toggleMoveMenu = (clientMsgNo: string) => {
     moveMenuFile.value = moveMenuFile.value === clientMsgNo ? null : clientMsgNo
 }
 
-const moveSingleFile = (clientMsgNo: string, categoryId: string | null) => {
-    moveFile(props.channelName, channelType.value, clientMsgNo, categoryId)
-    moveMenuFile.value = null
-    refreshStore()
+const moveSingleFile = async (clientMsgNo: string, categoryId: string | null) => {
+    try {
+        await moveFile(props.channelName, clientMsgNo, categoryId)
+        moveMenuFile.value = null
+        await refreshStore()
+    } catch (e: any) {
+        alert('移动文件失败: ' + (e.message || '未知错误'))
+    }
 }
 
 // ---- Preview ----
 const previewUrl = ref('')
 const preview = (url: string) => { previewUrl.value = url }
 const closePreview = () => { previewUrl.value = '' }
+
+// ---- Download ----
+function downloadFile(url: string, filename: string) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+}
 
 // ---- Helpers ----
 const fileCategory = (mime: string): string => {
@@ -264,6 +414,12 @@ const handleLocate = () => {
     closeCtxMenu()
 }
 
+const handleCtxDownload = () => {
+    const f = ctxMenuFile.value
+    if (f) downloadFile(f.url, f.name)
+    closeCtxMenu()
+}
+
 const handleSaveDoc = () => {
     const f = ctxMenuFile.value
     if (f) handleSaveToMyDocs(f)
@@ -287,7 +443,7 @@ if (typeof window !== 'undefined') {
     <div class="files-panel">
         <div class="files-header">
             <div class="files-header-title">
-                <h3>{{ groupName || channelName }}<span class="files-header-subtitle"> · 文件管理</span></h3>
+                <h3>{{ groupName || '群聊' }}<span class="files-header-subtitle"> · 文件管理</span></h3>
                 <p class="files-header-id" v-if="groupName && groupName !== channelName">ID: {{ channelName }}</p>
             </div>
             <button class="close-btn" @click="emit('close')">
@@ -342,6 +498,11 @@ if (typeof window !== 'undefined') {
                     </div>
 
                     <div class="cat-separator"></div>
+
+                    <!-- Spinner while loading categories from server -->
+                    <div class="cat-loading" v-if="storeLoading" style="text-align:center;padding:8px;color:var(--text-muted);font-size:12px;">
+                        ⏳ 加载分类...
+                    </div>
 
                     <div v-for="cat in categories" :key="cat.id" class="category-item"
                         :class="{ active: selectedCategoryId === cat.id }"
@@ -400,7 +561,7 @@ if (typeof window !== 'undefined') {
                         <span class="toolbar-count">({{ activeTabCount }})</span>
                     </span>
                     <div class="toolbar-actions">
-                        <div class="search-box" v-if="!isMyDocs">
+                        <div class="search-box" v-if="!isMyDocs && !selectMode">
                             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
                             </svg>
@@ -411,12 +572,12 @@ if (typeof window !== 'undefined') {
                                 </svg>
                             </button>
                         </div>
-                        <template v-if="!isMyDocs">
-                            <button v-if="selectMode" class="toolbar-btn" @click="selectAll">全选</button>
-                            <button v-if="selectMode && selectedFiles.size > 0" class="toolbar-btn toolbar-btn-primary"
+                        <template v-if="!isMyDocs && selectMode">
+                            <button class="toolbar-btn" @click="selectAll">全选</button>
+                            <button v-if="selectedFiles.size > 0" class="toolbar-btn"
                                 @click="batchMoveTo(null)">移出分类</button>
-                            <div v-if="selectMode && selectedFiles.size > 0 && categories.length > 0" class="batch-move-dropdown">
-                                <button class="toolbar-btn toolbar-btn-primary">移至... ▾</button>
+                            <div v-if="selectedFiles.size > 0 && categories.length > 0" class="batch-move-dropdown">
+                                <button class="toolbar-btn">移至 ▾</button>
                                 <div class="batch-move-menu">
                                     <div v-for="cat in categories" :key="cat.id" class="batch-move-item"
                                         @click="batchMoveTo(cat.id)">
@@ -424,10 +585,10 @@ if (typeof window !== 'undefined') {
                                     </div>
                                 </div>
                             </div>
-                            <button class="toolbar-btn" @click="toggleSelectMode"
-                                :class="{ active: selectMode }">
-                                {{ selectMode ? '取消' : '选择' }}
-                            </button>
+                            <button class="toolbar-btn toolbar-btn-cancel" @click="toggleSelectMode">取消选择</button>
+                        </template>
+                        <template v-else-if="!isMyDocs">
+                            <button class="toolbar-btn" @click="toggleSelectMode">选择文件</button>
                         </template>
                     </div>
                 </div>
@@ -456,6 +617,11 @@ if (typeof window !== 'undefined') {
                             <span class="image-sender">{{ f.sender }}</span>
                             <span class="image-date">{{ formatDate(f.timestamp) }}</span>
                             <span class="image-size" v-if="f.width">{{ f.width }}×{{ f.height }}</span>
+                            <button class="image-download-btn" title="下载" v-if="!selectMode" @click.stop="downloadFile(f.url, f.name)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                                </svg>
+                            </button>
                             <div class="file-move-trigger" v-if="!selectMode && !isMyDocs" @click.stop="toggleMoveMenu(f.clientMsgNo)">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                             </div>
@@ -501,6 +667,11 @@ if (typeof window !== 'undefined') {
                             </div>
                         </a>
                         <div class="doc-right">
+                            <button class="doc-download-btn" title="下载" @click.stop="downloadFile(f.url, f.name)" v-if="!selectMode">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                                </svg>
+                            </button>
                             <div class="category-tag" v-if="categoryNameFor(f.clientMsgNo)">{{ categoryNameFor(f.clientMsgNo) }}</div>
                             <div class="file-move-trigger" v-if="!selectMode && !isMyDocs" @click.stop="toggleMoveMenu(f.clientMsgNo)">
                                 <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
@@ -537,6 +708,12 @@ if (typeof window !== 'undefined') {
                 </svg>
                 <span>定位到聊天</span>
             </div>
+            <div class="ctx-menu-item" @click="handleCtxDownload">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+                <span>下载文件</span>
+            </div>
             <div class="ctx-menu-divider" v-if="!isMyDocs || ctxMenu"></div>
             <div class="ctx-menu-item" v-if="!isMyDocs && ctxMenu && !myDocsMsgNos.has(ctxMenu.clientMsgNo)" @click="handleSaveDoc">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -556,7 +733,7 @@ if (typeof window !== 'undefined') {
 
 <style scoped>
 .files-panel {
-    width: 540px;
+    width: 640px;
     flex-shrink: 0;
     background: var(--bg-card);
     border-left: 1px solid var(--border);
@@ -818,7 +995,7 @@ if (typeof window !== 'undefined') {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 10px;
+    padding: 10px 6px;
     margin: 8px;
     border-radius: 8px;
     font-size: 12px;
@@ -828,6 +1005,8 @@ if (typeof window !== 'undefined') {
     border: 1.5px dashed var(--border);
     cursor: pointer;
     transition: all 0.2s;
+    white-space: nowrap;
+    overflow: hidden;
 }
 
 .add-cat-btn:hover {
@@ -850,10 +1029,13 @@ if (typeof window !== 'undefined') {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 14px;
+    padding: 8px 10px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     background: var(--bg-card);
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 42px;
 }
 
 .toolbar-title {
@@ -877,14 +1059,18 @@ if (typeof window !== 'undefined') {
     display: flex;
     gap: 6px;
     align-items: center;
+    flex-wrap: wrap;
+    flex-shrink: 0;
 }
 
 .toolbar-btn {
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 7px;
-    font-size: 12px;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 11px;
     font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
     background: var(--bg);
     color: var(--text-secondary);
     border: 1px solid var(--border);
@@ -912,6 +1098,17 @@ if (typeof window !== 'undefined') {
 
 .toolbar-btn-primary:hover {
     opacity: 0.9;
+}
+
+.toolbar-btn-cancel {
+    color: var(--danger, #e84040);
+    border: 1px solid var(--danger, #e84040);
+    background: transparent;
+}
+
+.toolbar-btn-cancel:hover {
+    background: var(--danger, #e84040);
+    color: #fff;
 }
 
 /* ---- Search ---- */
@@ -983,13 +1180,14 @@ if (typeof window !== 'undefined') {
     display: none;
     position: absolute;
     top: calc(100% + 4px);
-    right: 0;
+    left: 0;
     z-index: 100;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 10px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    min-width: 130px;
+    min-width: 120px;
+    max-width: 160px;
     padding: 6px;
     backdrop-filter: blur(12px);
 }
@@ -1079,6 +1277,52 @@ if (typeof window !== 'undefined') {
 
 .file-move-trigger:hover {
     background: var(--bg-elevated);
+    color: var(--text);
+}
+
+/* ---- Download buttons ---- */
+.doc-download-btn {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.15s;
+    border: none;
+    background: transparent;
+    opacity: 0;
+}
+
+.doc-item:hover .doc-download-btn,
+.image-card:hover .doc-download-btn {
+    opacity: 1;
+}
+
+.doc-download-btn:hover {
+    background: var(--bg-elevated);
+    color: var(--primary);
+}
+
+.image-download-btn {
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.15s;
+    border: none;
+    background: transparent;
+    opacity: 0;
+    flex-shrink: 0;
+}
+
+.file-card:hover .image-download-btn,
+.image-card:hover .image-download-btn {
+    opacity: 1;
+}
+
+.image-download-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
     color: var(--text);
 }
 
